@@ -1,1 +1,1 @@
-# smolpc-blenderhelper
+This is still being developed and has a lot of bugs.

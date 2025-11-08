@@ -1,0 +1,19 @@
+[package]
+name = "blender_helper"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tauri = { version = "2", features = ["config-toml"] }
+tauri-plugin-shell = "2"
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.11", features = ["json"] }
+anyhow = "1"
+tower-http = { version = "0.5", features = ["cors"] }
+
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
