@@ -20,6 +20,7 @@ async fn main() {
         .route("/health", get(|| async { "ok" }))
         .route("/blender/next_step", post(blender_bridge::next_step))
         .route("/blender/run_macro", post(blender_bridge::run_macro))
+        .route("/blender/remember", post(blender_bridge::remember_api))
         .layer(cors);
 
     // Spawn the REST server on 127.0.0.1:17890
