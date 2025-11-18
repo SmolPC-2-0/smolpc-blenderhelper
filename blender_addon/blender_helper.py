@@ -585,6 +585,63 @@ class BLENDERHELPER_OT_do_it(bpy.types.Operator):
                 out.append(ind + "    bpy.ops.object.mode_set(mode='OBJECT')")
                 continue
 
+            # Fix unsafe .data access on potentially None objects
+            # Pattern: obj.data.vertices, obj.data.edges, obj.data.polygons, etc.
+            if re.search(r'\w+\.data\.(vertices|edges|polygons|materials|uv_layers)', ln):
+                obj_match = re.search(r'(\w+)\.data\.(vertices|edges|polygons|materials|uv_layers)', ln)
+                if obj_match and "if " not in ln and "try:" not in ln:
+                    obj_var = obj_match.group(1)
+                    ind = re.match(r"^(\s*)", ln).group(1)
+                    # Add safety check
+                    out.append(ind + f"if {obj_var} and hasattr({obj_var}, 'data') and {obj_var}.data:")
+                    out.append(ind + "    " + ln.strip())
+                    continue
+
+            # Fix unsafe bpy.context.active_object.data access
+            if "bpy.context.active_object.data" in ln and "if " not in ln:
+                ind = re.match(r"^(\s*)", ln).group(1)
+                out.append(ind + "if bpy.context.active_object and bpy.context.active_object.data:")
+                out.append(ind + "    " + ln.strip())
+                continue
+
+            # Fix mesh assignment that might be None
+            # Pattern: obj.data = some_mesh (where some_mesh might be None)
+            if re.search(r'\w+\.data\s*=\s*\w+', ln) and "bpy.data.meshes" not in ln:
+                ind = re.match(r"^(\s*)", ln).group(1)
+                obj_match = re.search(r'(\w+)\.data\s*=\s*(\w+)', ln)
+                if obj_match:
+                    obj_var = obj_match.group(1)
+                    mesh_var = obj_match.group(2)
+                    out.append(ind + f"if {obj_var} and {mesh_var}:")
+                    out.append(ind + "    " + ln.strip())
+                    continue
+
+            # Fix operations that require mesh type
+            # Accessing .data on object that might not be MESH type
+            if re.search(r'\w+\.data\s*=\s*bpy\.data\.meshes\.new', ln):
+                # This is fine - creating new mesh data
+                pass
+            elif re.search(r'\w+\.data\b', ln) and "if " not in ln and "=" not in ln:
+                # Reading .data, need to ensure it's a mesh object
+                obj_match = re.search(r'(\w+)\.data', ln)
+                if obj_match and "bpy.context" not in ln:
+                    obj_var = obj_match.group(1)
+                    ind = re.match(r"^(\s*)", ln).group(1)
+                    out.append(ind + f"if {obj_var} and {obj_var}.type == 'MESH' and {obj_var}.data:")
+                    out.append(ind + "    " + ln.strip())
+                    continue
+
+            # Fix bmesh.from_mesh calls that might receive None
+            if "bmesh.from_mesh" in ln or "bm.from_mesh" in ln:
+                ind = re.match(r"^(\s*)", ln).group(1)
+                # Extract the mesh argument
+                mesh_match = re.search(r'from_mesh\(([^)]+)\)', ln)
+                if mesh_match and "try:" not in ln:
+                    mesh_arg = mesh_match.group(1).strip()
+                    out.append(ind + f"if {mesh_arg}:")
+                    out.append(ind + "    " + ln.strip())
+                    continue
+
             out.append(ln)
         return "\n".join(out)
 

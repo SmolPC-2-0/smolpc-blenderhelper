@@ -261,6 +261,48 @@ Mode management best practices:
 - Edit mode ops include: subdivide, inset, bevel, extrude, loopcut, select, delete, merge
 - Use variables to track objects, avoid accessing by name when possible
 
+Mesh data safety (CRITICAL - prevents NoneType errors):
+✓ CORRECT: Safe mesh data access
+  if obj and obj.type == 'MESH' and obj.data:
+      verts = obj.data.vertices
+      # ... use verts ...
+✗ WRONG: obj.data.vertices - crashes if obj is None or not a MESH
+
+✓ CORRECT: Safe active object data access
+  if bpy.context.active_object and bpy.context.active_object.data:
+      mesh = bpy.context.active_object.data
+✗ WRONG: mesh = bpy.context.active_object.data - crashes if no active object
+
+✓ CORRECT: Safe bmesh from_mesh
+  if obj and obj.data:
+      bm = bmesh.new()
+      bm.from_mesh(obj.data)
+      # ... operations ...
+      bm.to_mesh(obj.data)
+      bm.free()
+✗ WRONG: bm.from_mesh(obj.data) - crashes if obj.data is None
+
+✓ CORRECT: Check object exists before mesh operations
+  obj = bpy.data.objects.get("MyObject")
+  if obj and obj.type == 'MESH':
+      # Safe to access obj.data
+      for vert in obj.data.vertices:
+          # ... process vertex ...
+✗ WRONG: Accessing .data without checking object type or None
+
+✓ CORRECT: Mesh assignment with None check
+  new_mesh = bpy.data.meshes.new("MyMesh")
+  obj = bpy.data.objects.new("MyObject", new_mesh)
+  if obj and new_mesh:
+      bpy.context.collection.objects.link(obj)
+✗ WRONG: Assuming mesh/object creation always succeeds
+
+Always check:
+1. Object is not None: if obj
+2. Object is correct type: if obj.type == 'MESH'
+3. Object has data: if obj.data
+4. Combine checks: if obj and obj.type == 'MESH' and obj.data
+
 Reasoning routine (do this silently before generating code)
 1) Interpretation: What is the shape? What level of complexity? Style?
 2) Decomposition: What primitives/modifiers/techniques are needed?
