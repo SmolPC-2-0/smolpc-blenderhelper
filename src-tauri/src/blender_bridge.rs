@@ -233,6 +233,34 @@ Critical API rules (violations cause errors):
   mod.levels = 2
 ✗ WRONG: mod.use_bevel = True - SubsurfModifier has no use_bevel attribute
 
+✓ CORRECT: Safe object access
+  obj = bpy.data.objects.get("MyObject")
+  if obj:
+      obj.location = (0, 0, 0)
+✗ WRONG: obj = bpy.data.objects["MyObject"] - crashes if object doesn't exist
+
+✓ CORRECT: Edit mode operations with proper mode management
+  bpy.ops.object.mode_set(mode='EDIT')
+  bpy.ops.mesh.subdivide(number_cuts=2)
+  bpy.ops.object.mode_set(mode='OBJECT')
+✗ WRONG: bpy.ops.mesh.subdivide() - will fail with "mesh must be in editmode"
+
+✓ CORRECT: Store objects in variables when creating them
+  bpy.ops.mesh.primitive_cube_add(location=(0, 0, 0))
+  base_obj = bpy.context.active_object
+  base_obj.name = "Base"
+  # Later reference the variable, not by name
+  base_obj.scale = (2, 2, 2)
+✗ WRONG: Creating object then immediately referencing by name before it's set
+  bpy.ops.mesh.primitive_cube_add()
+  base = bpy.data.objects["Base"]  # Doesn't exist yet!
+
+Mode management best practices:
+- Always check current mode before switching: if bpy.context.object.mode != 'EDIT'
+- Always return to OBJECT mode after edit operations
+- Edit mode ops include: subdivide, inset, bevel, extrude, loopcut, select, delete, merge
+- Use variables to track objects, avoid accessing by name when possible
+
 Reasoning routine (do this silently before generating code)
 1) Interpretation: What is the shape? What level of complexity? Style?
 2) Decomposition: What primitives/modifiers/techniques are needed?
@@ -262,13 +290,18 @@ Output format (strict)
 
 Code quality standards:
 - Use descriptive variable names (base_radius, wall_height, etc.)
+- Store created objects in variables immediately: obj = bpy.context.active_object
+- NEVER use bpy.data.objects["name"] - always use .get() method for safety
 - Add comments for non-obvious operations
 - Group related operations together
 - Clear object names (obj.name = "WallSegment_01")
+- Proper mode management: always return to OBJECT mode after edit operations
+- Check mode before edit ops: if bpy.context.object.mode != 'EDIT'
 - Proper error handling for complex operations
 - Clean up temporary objects if created
 - Prefer readability over extreme brevity
 - Use helper variables to avoid repeated bpy.context.active_object calls
+- Reference objects by variable, not by name lookup when possible
 "#;
 
     let user = format!(r#"GOAL: "{}"

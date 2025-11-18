@@ -514,6 +514,77 @@ class BLENDERHELPER_OT_do_it(bpy.types.Operator):
                 out.append(ind + "    pass  # Modifier might not support levels")
                 continue
 
+            # Fix unsafe object access by name (bpy.data.objects["name"])
+            # Convert to safe .get() method
+            if re.search(r'bpy\.data\.objects\["[^"]+"\]', ln) or re.search(r"bpy\.data\.objects\['[^']+'\]", ln):
+                ind = re.match(r"^(\s*)", ln).group(1)
+                # Extract object name
+                name_match = re.search(r'bpy\.data\.objects\[(["\'])([^"\']+)\1\]', ln)
+                if name_match:
+                    obj_name = name_match.group(2)
+                    # Check if it's an assignment target
+                    if re.match(r"^\s*\w+\s*=", ln):
+                        # It's a variable assignment, make it safe
+                        var_match = re.match(r"^(\s*)(\w+)\s*=\s*bpy\.data\.objects", ln)
+                        if var_match:
+                            var_name = var_match.group(2)
+                            out.append(ind + f'{var_name} = bpy.data.objects.get("{obj_name}")')
+                            out.append(ind + f'if not {var_name}:')
+                            out.append(ind + f'    print("Warning: Object {obj_name} not found")')
+                            continue
+                # For other cases, wrap in try/except
+                out.append(ind + "try:")
+                out.append(ind + "    " + ln.strip())
+                out.append(ind + "except KeyError:")
+                out.append(ind + "    pass  # Object not found")
+                continue
+
+            # Fix unsafe mesh access by name
+            if re.search(r'bpy\.data\.meshes\["[^"]+"\]', ln) or re.search(r"bpy\.data\.meshes\['[^']+'\]", ln):
+                ind = re.match(r"^(\s*)", ln).group(1)
+                name_match = re.search(r'bpy\.data\.meshes\[(["\'])([^"\']+)\1\]', ln)
+                if name_match:
+                    mesh_name = name_match.group(2)
+                    if re.match(r"^\s*\w+\s*=", ln):
+                        var_match = re.match(r"^(\s*)(\w+)\s*=\s*bpy\.data\.meshes", ln)
+                        if var_match:
+                            var_name = var_match.group(2)
+                            out.append(ind + f'{var_name} = bpy.data.meshes.get("{mesh_name}")')
+                            continue
+                out.append(ind + "try:")
+                out.append(ind + "    " + ln.strip())
+                out.append(ind + "except KeyError:")
+                out.append(ind + "    pass  # Mesh not found")
+                continue
+
+            # Fix edit mode operations that need mode switching
+            # Common edit mode ops: subdivide, inset, bevel, extrude, loopcut, etc.
+            edit_mode_ops = [
+                r'bpy\.ops\.mesh\.subdivide\(',
+                r'bpy\.ops\.mesh\.inset\(',
+                r'bpy\.ops\.mesh\.bevel\(',
+                r'bpy\.ops\.mesh\.extrude_region',
+                r'bpy\.ops\.mesh\.loopcut',
+                r'bpy\.ops\.mesh\.select_',
+                r'bpy\.ops\.mesh\.delete\(',
+                r'bpy\.ops\.mesh\.merge\(',
+                r'bpy\.ops\.mesh\.separate\(',
+                r'bpy\.ops\.mesh\.knife_',
+            ]
+            needs_edit_mode = any(re.search(pattern, ln) for pattern in edit_mode_ops)
+
+            if needs_edit_mode and "bpy.ops.object.mode_set" not in ln:
+                # Check if we're already handling mode switching in surrounding context
+                ind = re.match(r"^(\s*)", ln).group(1)
+                # Wrap in mode switching
+                out.append(ind + "# Ensure edit mode for mesh operation")
+                out.append(ind + "if bpy.context.active_object and bpy.context.active_object.type == 'MESH':")
+                out.append(ind + "    if bpy.context.object.mode != 'EDIT':")
+                out.append(ind + "        bpy.ops.object.mode_set(mode='EDIT')")
+                out.append(ind + "    " + ln.strip())
+                out.append(ind + "    bpy.ops.object.mode_set(mode='OBJECT')")
+                continue
+
             out.append(ln)
         return "\n".join(out)
 
