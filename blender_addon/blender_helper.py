@@ -455,6 +455,65 @@ class BLENDERHELPER_OT_do_it(bpy.types.Operator):
                 # Check if next lines have bm.free(), if not suggest it
                 continue
 
+            # Fix modifiers[-1] access (risky if collection is empty)
+            if re.search(r"\.modifiers\[-1\]", ln) and "try:" not in ln:
+                ind = re.match(r"^(\s*)", ln).group(1)
+                # Wrap in safe access
+                out.append(ind + "try:")
+                out.append(ind + "    " + ln.strip())
+                out.append(ind + "except (IndexError, AttributeError):")
+                out.append(ind + "    pass")
+                continue
+
+            # Fix SubsurfModifier.use_bevel (doesn't exist - common LLM mistake)
+            if re.search(r"\.use_bevel\s*=", ln) and "modifier" in ln.lower():
+                # Remove this line, use_bevel doesn't exist on modifiers
+                ind = re.match(r"^(\s*)", ln).group(1)
+                out.append(ind + "# Skipped: use_bevel attribute doesn't exist on modifiers")
+                continue
+
+            # Fix incorrect object attributes (width, height, depth on Object)
+            # Objects don't have width/height/depth - those are on dimensions
+            if re.search(r"\w+\.(width|height|depth)\s*=", ln) and "obj" in ln:
+                ind = re.match(r"^(\s*)", ln).group(1)
+                attr_match = re.search(r"\.(\w+)\s*=\s*(.+)", ln)
+                if attr_match:
+                    attr = attr_match.group(1)
+                    value = attr_match.group(2).strip()
+                    # Map to dimensions
+                    dim_map = {"width": "x", "height": "z", "depth": "y"}
+                    if attr in dim_map:
+                        dim = dim_map[attr]
+                        out.append(ind + f"# Fixed: Object doesn't have .{attr}, using .dimensions.{dim}")
+                        obj_var = re.search(r"(\w+)\." + attr, ln)
+                        if obj_var:
+                            var = obj_var.group(1)
+                            out.append(ind + f"{var}.dimensions.{dim} = {value}")
+                        else:
+                            out.append(ln)
+                        continue
+
+            # Fix accessing attributes on potentially None modifiers
+            # Pattern: mod.levels = X or subsurf.levels = X
+            if re.search(r"(\w+_mod|\w+_modifier|subsurf|mirror|array)\.\w+\s*=", ln):
+                var_match = re.search(r"((\w+_mod|\w+_modifier|subsurf|mirror|array)\.)", ln)
+                if var_match and "if " not in ln and "try:" not in ln:
+                    var_name = var_match.group(2)
+                    ind = re.match(r"^(\s*)", ln).group(1)
+                    # Add None check
+                    out.append(ind + f"if {var_name}:")
+                    out.append(ind + "    " + ln.strip())
+                    continue
+
+            # Fix .levels access on modifiers (should check if modifier exists first)
+            if re.search(r"\.levels\s*=\s*\d+", ln) and "if " not in ln:
+                ind = re.match(r"^(\s*)", ln).group(1)
+                out.append(ind + "try:")
+                out.append(ind + "    " + ln.strip())
+                out.append(ind + "except AttributeError:")
+                out.append(ind + "    pass  # Modifier might not support levels")
+                continue
+
             out.append(ln)
         return "\n".join(out)
 
