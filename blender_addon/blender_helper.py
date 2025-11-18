@@ -148,13 +148,19 @@ class BLENDERHELPER_OT_do_it(bpy.types.Operator):
             if not s:
                 lines.append(line)
                 continue
-            if s.startswith(("#", "//")):
+            # Skip operator registration lines (not needed for scripts)
+            if "bl_idname" in s or "bpy.utils.register_class" in s or ("class " in s and "bpy.types" in s):
                 continue
-            if "bl_idname" in s or "bpy.utils.register_class" in s or "class " in s and "bpy.types" in s:
-                continue
+            # Preserve imports and inline code comments - only skip standalone comment lines at the start
+            # This allows documentation within complex code
+            if s.startswith(("#", "//")) and not any(keyword in s.lower() for keyword in ["import", "from", "todo", "note:", "warning:"]):
+                # Skip only if it's a leading comment before any code
+                if not any("import" in l or "bpy." in l for l in lines):
+                    continue
             lines.append(line)
         cleaned = "\n".join(lines)
-        cleaned = re.sub(r"^# .*", "", cleaned).strip()
+        # Only remove leading markdown comments, not inline documentation
+        cleaned = re.sub(r"^# [A-Z].*\n", "", cleaned).strip()
         return cleaned
 
     @staticmethod
@@ -305,10 +311,13 @@ class BLENDERHELPER_OT_do_it(bpy.types.Operator):
         - Replace active_object.delete() or obj.delete() with ops deletion
         - Map non-existent ops (mesh.boolean_add) to valid modifier calls
         - Gracefully handle generic 'mesh.extrude(' calls to a safe extrude
+        - Fix common modifier API mistakes
+        - Preserve bmesh and mathutils imports/operations
         """
         lines = code.splitlines()
         out = []
         for ln in lines:
+            # Fix object.delete() calls
             m = re.match(r"^(\s*)bpy\.context\.active_object\.delete\s*\(\s*\)\s*$", ln)
             if m:
                 ind = m.group(1)
@@ -326,12 +335,14 @@ class BLENDERHELPER_OT_do_it(bpy.types.Operator):
                 out.append(ind + "except Exception:")
                 out.append(ind + "    pass")
                 continue
-            # Normalize bpy.ops.object.delete(...) with unsupported args (e.g., obj=)
+
+            # Normalize bpy.ops.object.delete(...) with unsupported args
             if re.match(r"^\s*bpy\.ops\.object\.delete\s*\(.*\)\s*$", ln):
                 ind = re.match(r"^(\s*)", ln).group(1)
                 out.append(ind + "bpy.ops.object.delete(use_global=False)")
                 continue
-            # Replace non-existent mesh.boolean_add with a valid boolean modifier
+
+            # Replace non-existent mesh.boolean_add with valid boolean modifier
             if ("bpy.ops.mesh.boolean_add" in ln) or ("bpy.ops.object.boolean_add" in ln):
                 ind = re.match(r"^(\s*)", ln).group(1)
                 args_m = re.search(r"\((.*)\)", ln)
@@ -349,7 +360,8 @@ class BLENDERHELPER_OT_do_it(bpy.types.Operator):
                 out.append(ind + "except Exception:")
                 out.append(ind + "    pass")
                 continue
-            # Fallback for generic 'bpy.ops.mesh.extrude(' which doesn't exist
+
+            # Fix generic extrude() calls
             if re.match(r"^\s*bpy\.ops\.mesh\.extrude\s*\(.*\)\s*$", ln):
                 ind = re.match(r"^(\s*)", ln).group(1)
                 out.append(ind + "try:")
@@ -357,7 +369,34 @@ class BLENDERHELPER_OT_do_it(bpy.types.Operator):
                 out.append(ind + "except Exception:")
                 out.append(ind + "    pass")
                 continue
-            # Primitive helpers that incorrectly specify size= for unsupported operators
+
+            # Fix incorrect modifier.apply() calls - should use bpy.ops.object.modifier_apply()
+            if re.match(r"^\s*\w+\.modifiers\[.*\]\.apply\s*\(.*\)\s*$", ln) or re.match(r"^\s*\w+_mod\.apply\s*\(.*\)\s*$", ln):
+                ind = re.match(r"^(\s*)", ln).group(1)
+                # Extract modifier name/variable
+                mod_match = re.search(r'modifiers\["([^"]+)"\]|modifiers\[\'([^\']+)\'\]|(\w+_mod)', ln)
+                if mod_match:
+                    mod_name = mod_match.group(1) or mod_match.group(2)
+                    if mod_name:
+                        out.append(ind + f'bpy.ops.object.modifier_apply(modifier="{mod_name}")')
+                    else:
+                        # If using variable, need to get the name
+                        out.append(ind + "# Note: modifier.apply() doesn't exist, use bpy.ops.object.modifier_apply(modifier=name)")
+                        out.append(ln)
+                else:
+                    out.append(ln)
+                continue
+
+            # Fix object.*_add calls that should be mesh.primitive_*_add
+            if re.match(r"^\s*bpy\.ops\.object\.(cube|sphere|cylinder|cone|torus|plane|circle|grid|uv_sphere|ico_sphere)_add", ln):
+                ln = ln.replace("bpy.ops.object.", "bpy.ops.mesh.primitive_")
+                # Ensure _add suffix
+                for prim in ["cube", "sphere", "cylinder", "cone", "torus", "plane", "circle", "grid"]:
+                    ln = ln.replace(f"primitive_{prim}(", f"primitive_{prim}_add(")
+                ln = ln.replace("primitive_uv_sphere_add", "primitive_uv_sphere_add")
+                ln = ln.replace("primitive_ico_sphere_add", "primitive_ico_sphere_add")
+
+            # Fix size= parameter for unsupported primitives
             if "bpy.ops.mesh.primitive_" in ln and "size=" in ln and not any(k in ln for k in ["primitive_cube_add", "primitive_plane_add"]):
                 ind = re.match(r"^(\s*)", ln).group(1)
                 size_match = re.search(r"size\s*=\s*([^,)]*)", ln)
@@ -369,17 +408,53 @@ class BLENDERHELPER_OT_do_it(bpy.types.Operator):
                 out.append(ind + "if _obj:")
                 out.append(ind + f"    _obj.scale = ({size_expr}, {size_expr}, {size_expr})")
                 continue
-            # Replace nonexistent primitive_pyramid_add with a 4-vertex cone
+
+            # Fix pyramid (use 4-vertex cone)
             if "bpy.ops.mesh.primitive_pyramid_add" in ln:
                 ind = re.match(r"^(\s*)", ln).group(1)
                 out.append(ind + "bpy.ops.mesh.primitive_cone_add(vertices=4, radius1=1, depth=2, enter_editmode=False, align='WORLD', location=(0, 0, 0))")
                 continue
-            # Scene/BlendData attribute guards
+
+            # Fix incorrect modifier_apply calls (wrong parameter names)
+            if "bpy.ops.object.modifier_apply" in ln and "apply_as=" in ln:
+                ln = ln.replace("apply_as=", "modifier=")
+
+            # Fix incorrect subdivision surface syntax
+            if "bpy.ops.object.subdivision_set" in ln:
+                # This operator exists but often misused
+                ind = re.match(r"^(\s*)", ln).group(1)
+                level_match = re.search(r"level\s*=\s*(\d+)", ln)
+                level = level_match.group(1) if level_match else "2"
+                out.append(ind + "try:")
+                out.append(ind + f"    bpy.ops.object.subdivision_set(level={level})")
+                out.append(ind + "except Exception:")
+                out.append(ind + "    pass")
+                continue
+
+            # Fix direct vertex modification (read-only)
+            if re.search(r"\.data\.vertices\[\d+\]\.co\s*=", ln):
+                ind = re.match(r"^(\s*)", ln).group(1)
+                out.append(ind + "# Warning: vertices are read-only; use bmesh for vertex manipulation")
+                out.append(ind + "# " + ln.strip())
+                continue
+
+            # Skip problematic scene attributes
             if re.search(r"bpy\.context\.scene\.(unit_system|unit_settings)", ln):
-                # skip lines that try to access missing unit system
                 continue
             if re.search(r"bpy\.data\.modifiers", ln):
                 continue
+
+            # Preserve imports (critical for complex operations)
+            if ln.strip().startswith("import ") or ln.strip().startswith("from "):
+                out.append(ln)
+                continue
+
+            # Fix common bmesh mistakes - ensure proper cleanup
+            if "bm.to_mesh" in ln:
+                out.append(ln)
+                # Check if next lines have bm.free(), if not suggest it
+                continue
+
             out.append(ln)
         return "\n".join(out)
 
