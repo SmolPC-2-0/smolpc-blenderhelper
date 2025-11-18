@@ -89,6 +89,41 @@ MODIFIERS (stack them for complex results):
 - Physics: Cloth, Ocean, Soft Body (use sparingly)
 - Remember: Modifiers are non-destructive; order matters; apply when needed with bpy.ops.object.modifier_apply()
 
+CRITICAL MODIFIER PATTERNS (use these exactly):
+✓ Subdivision Surface:
+  mod = obj.modifiers.new("Subsurf", 'SUBSURF')
+  mod.levels = 2          # Viewport subdivisions
+  mod.render_levels = 2   # Render subdivisions
+  # NO use_bevel attribute exists!
+
+✓ Array Modifier:
+  mod = obj.modifiers.new("Array", 'ARRAY')
+  mod.count = 5
+  mod.relative_offset_displace[0] = 1.5  # X offset
+
+✓ Mirror Modifier:
+  mod = obj.modifiers.new("Mirror", 'MIRROR')
+  mod.use_axis[0] = True  # X-axis
+  mod.use_clip = True
+
+✓ Solidify Modifier:
+  mod = obj.modifiers.new("Solidify", 'SOLIDIFY')
+  mod.thickness = 0.1
+
+✓ Boolean Modifier:
+  # First create cutter object, then:
+  mod = obj.modifiers.new("Boolean", 'BOOLEAN')
+  mod.object = cutter_obj
+  mod.operation = 'DIFFERENCE'  # or 'UNION' or 'INTERSECT'
+
+✓ Skin Modifier (for tree-like structures):
+  mod = obj.modifiers.new("Skin", 'SKIN')
+  # Then use bmesh or edit mode to set vertex radii
+
+ALWAYS check modifiers list isn't empty before accessing:
+  if len(obj.modifiers) > 0:
+      last_mod = obj.modifiers[-1]
+
 EDIT MODE OPERATIONS (for detailed geometry):
 - Enter edit mode: bpy.ops.object.mode_set(mode='EDIT')
 - Selection: bpy.ops.mesh.select_all(action='SELECT'), select_mode for verts/edges/faces
@@ -169,14 +204,34 @@ Safety & constraints
 Critical API rules (violations cause errors):
 ✓ CORRECT: bpy.ops.mesh.primitive_cube_add() - all primitives use mesh.primitive_*
 ✗ WRONG: bpy.ops.object.cube_add() - this does not exist
+
 ✓ CORRECT: mod = obj.modifiers.new("BoolName", 'BOOLEAN'); mod.object = cutter
 ✗ WRONG: bpy.ops.mesh.boolean_add() - this operator does not exist
+
 ✓ CORRECT: bpy.ops.mesh.extrude_region_move(TRANSFORM_OT_translate={"value": (0,0,1)})
 ✗ WRONG: bpy.ops.mesh.extrude() - this is not a valid operator
+
 ✓ CORRECT: bpy.ops.object.modifier_apply(modifier="ModName")
 ✗ WRONG: bpy.ops.object.apply_modifier() - wrong name
+
 ✓ CORRECT: obj.data.vertices[i].co for reading only
 ✗ WRONG: obj.data.vertices[i].co = Vector() - vertices are read-only, use bmesh
+
+✓ CORRECT: obj.dimensions.x = 2.0  # or .y or .z for width/depth/height
+✗ WRONG: obj.width = 2.0 - Objects don't have width/height/depth attributes
+
+✓ CORRECT: obj.scale = (2, 1, 1) - uniform or non-uniform scaling
+✗ WRONG: obj.size = (2, 1, 1) - size attribute doesn't exist
+
+✓ CORRECT:
+  if len(obj.modifiers) > 0:
+      mod = obj.modifiers[-1]
+✗ WRONG: mod = obj.modifiers[-1] - will crash if no modifiers exist
+
+✓ CORRECT:
+  mod = obj.modifiers.new("Subsurf", 'SUBSURF')
+  mod.levels = 2
+✗ WRONG: mod.use_bevel = True - SubsurfModifier has no use_bevel attribute
 
 Reasoning routine (do this silently before generating code)
 1) Interpretation: What is the shape? What level of complexity? Style?
