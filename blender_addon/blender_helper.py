@@ -500,9 +500,12 @@ class BLENDERHELPER_OT_do_it(bpy.types.Operator):
                 if var_match and "if " not in ln and "try:" not in ln:
                     var_name = var_match.group(2)
                     ind = re.match(r"^(\s*)", ln).group(1)
-                    # Add None check
-                    out.append(ind + f"if {var_name}:")
-                    out.append(ind + "    " + ln.strip())
+                    # Add None check with try/except
+                    out.append(ind + "try:")
+                    out.append(ind + f"    if {var_name}:")
+                    out.append(ind + "        " + ln.strip())
+                    out.append(ind + "except (AttributeError, TypeError):")
+                    out.append(ind + "    pass")
                     continue
 
             # Fix .levels access on modifiers (should check if modifier exists first)
@@ -592,28 +595,37 @@ class BLENDERHELPER_OT_do_it(bpy.types.Operator):
                 if obj_match and "if " not in ln and "try:" not in ln:
                     obj_var = obj_match.group(1)
                     ind = re.match(r"^(\s*)", ln).group(1)
-                    # Add safety check
-                    out.append(ind + f"if {obj_var} and hasattr({obj_var}, 'data') and {obj_var}.data:")
-                    out.append(ind + "    " + ln.strip())
+                    # Use try/except for safety
+                    out.append(ind + "try:")
+                    out.append(ind + f"    if {obj_var} and hasattr({obj_var}, 'data') and {obj_var}.data:")
+                    out.append(ind + "        " + ln.strip())
+                    out.append(ind + "except (AttributeError, TypeError):")
+                    out.append(ind + "    pass")
                     continue
 
             # Fix unsafe bpy.context.active_object.data access
-            if "bpy.context.active_object.data" in ln and "if " not in ln:
+            if "bpy.context.active_object.data" in ln and "if " not in ln and "try:" not in ln:
                 ind = re.match(r"^(\s*)", ln).group(1)
-                out.append(ind + "if bpy.context.active_object and bpy.context.active_object.data:")
-                out.append(ind + "    " + ln.strip())
+                out.append(ind + "try:")
+                out.append(ind + "    if bpy.context.active_object and bpy.context.active_object.data:")
+                out.append(ind + "        " + ln.strip())
+                out.append(ind + "except (AttributeError, TypeError):")
+                out.append(ind + "    pass")
                 continue
 
             # Fix mesh assignment that might be None
             # Pattern: obj.data = some_mesh (where some_mesh might be None)
-            if re.search(r'\w+\.data\s*=\s*\w+', ln) and "bpy.data.meshes" not in ln:
+            if re.search(r'\w+\.data\s*=\s*\w+', ln) and "bpy.data.meshes" not in ln and "if " not in ln:
                 ind = re.match(r"^(\s*)", ln).group(1)
                 obj_match = re.search(r'(\w+)\.data\s*=\s*(\w+)', ln)
                 if obj_match:
                     obj_var = obj_match.group(1)
                     mesh_var = obj_match.group(2)
-                    out.append(ind + f"if {obj_var} and {mesh_var}:")
-                    out.append(ind + "    " + ln.strip())
+                    out.append(ind + "try:")
+                    out.append(ind + f"    if {obj_var} and {mesh_var}:")
+                    out.append(ind + "        " + ln.strip())
+                    out.append(ind + "except (AttributeError, TypeError):")
+                    out.append(ind + "    pass")
                     continue
 
             # Fix operations that require mesh type
@@ -621,25 +633,31 @@ class BLENDERHELPER_OT_do_it(bpy.types.Operator):
             if re.search(r'\w+\.data\s*=\s*bpy\.data\.meshes\.new', ln):
                 # This is fine - creating new mesh data
                 pass
-            elif re.search(r'\w+\.data\b', ln) and "if " not in ln and "=" not in ln:
+            elif re.search(r'\w+\.data\b', ln) and "if " not in ln and "=" not in ln and "try:" not in ln:
                 # Reading .data, need to ensure it's a mesh object
                 obj_match = re.search(r'(\w+)\.data', ln)
                 if obj_match and "bpy.context" not in ln:
                     obj_var = obj_match.group(1)
                     ind = re.match(r"^(\s*)", ln).group(1)
-                    out.append(ind + f"if {obj_var} and {obj_var}.type == 'MESH' and {obj_var}.data:")
-                    out.append(ind + "    " + ln.strip())
+                    out.append(ind + "try:")
+                    out.append(ind + f"    if {obj_var} and {obj_var}.type == 'MESH' and {obj_var}.data:")
+                    out.append(ind + "        " + ln.strip())
+                    out.append(ind + "except (AttributeError, TypeError):")
+                    out.append(ind + "    pass")
                     continue
 
             # Fix bmesh.from_mesh calls that might receive None
-            if "bmesh.from_mesh" in ln or "bm.from_mesh" in ln:
+            if ("bmesh.from_mesh" in ln or "bm.from_mesh" in ln) and "try:" not in ln:
                 ind = re.match(r"^(\s*)", ln).group(1)
                 # Extract the mesh argument
                 mesh_match = re.search(r'from_mesh\(([^)]+)\)', ln)
-                if mesh_match and "try:" not in ln:
+                if mesh_match:
                     mesh_arg = mesh_match.group(1).strip()
-                    out.append(ind + f"if {mesh_arg}:")
-                    out.append(ind + "    " + ln.strip())
+                    out.append(ind + "try:")
+                    out.append(ind + f"    if {mesh_arg}:")
+                    out.append(ind + "        " + ln.strip())
+                    out.append(ind + "except (AttributeError, TypeError, ValueError):")
+                    out.append(ind + "    pass")
                     continue
 
             out.append(ln)
