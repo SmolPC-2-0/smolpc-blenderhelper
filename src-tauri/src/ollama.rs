@@ -6,7 +6,7 @@ pub async fn ask(system: &str, user: &str) -> Result<String, reqwest::Error> {
         .timeout(Duration::from_secs(300))
         .build()?;
 
-    let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "qwen2.5-coder:32b".to_string());
+    let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "qwen2.5-coder:14b".to_string());
 
     // Request a non-streaming response so we can parse a single JSON
     // object with the answer instead of an NDJSON stream.

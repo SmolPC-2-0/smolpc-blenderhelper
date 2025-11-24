@@ -24,7 +24,7 @@ Local Blender modeling copilot powered by a Tauri desktop app, a Blender add‑o
 - **Blender add‑on** (`blender_addon/blender_helper.py`)  
   Adds a “Blender Helper” panel in the 3D Viewport sidebar with the same Goal / Next Step / Do It flow.
 - **Local LLM via Ollama** (`src-tauri/src/ollama.rs`)
-  Calls `http://127.0.0.1:11434/api/chat` and defaults to the `qwen2.5-coder:32b` model unless `OLLAMA_MODEL` is set.
+  Calls `http://127.0.0.1:11434/api/chat` and defaults to the `qwen2.5-coder:14b` model unless `OLLAMA_MODEL` is set.
 
 All traffic is local: Blender and the Tauri UI only talk to the HTTP server on `127.0.0.1`, and the server only talks to the local Ollama instance.
 
@@ -33,7 +33,7 @@ All traffic is local: Blender and the Tauri UI only talk to the HTTP server on `
 - Blender 3.x or later (the prompts target Blender 4.x terminology).
 - Rust and Cargo installed (for building the Tauri backend).
 - Node.js and `npm` (to run the `@tauri-apps/cli` from `package.json`).
-- A running **Ollama** instance with `qwen2.5-coder:32b` or another capable code model.
+- A running **Ollama** instance with a capable code model (recommended: `qwen2.5-coder:14b` or `7b`).
 - In Blender's Python environment, the `requests` package must be available (the add‑on imports it).
 
 ## Setup & Running
@@ -53,22 +53,34 @@ This installs the Tauri CLI used by the project. Rust dependencies are handled a
 Make sure Ollama is installed and running on the same machine, listening on the default `127.0.0.1:11434`.
 
 1. Download and install Ollama from its official site.
-2. Pull the recommended model:
+2. Pull the recommended model based on your system:
 
+**For most laptops (8-16GB RAM):**
+```bash
+ollama pull qwen2.5-coder:7b
+```
+Good quality, runs smoothly on most hardware (~5GB RAM usage).
+
+**For mid-range systems (16-32GB RAM) - DEFAULT:**
+```bash
+ollama pull qwen2.5-coder:14b
+```
+Excellent balance of quality and performance (~10GB RAM usage).
+
+**For powerful systems (32GB+ RAM):**
 ```bash
 ollama pull qwen2.5-coder:32b
 ```
+Best quality but requires significant resources (~20GB RAM usage).
 
-This model provides excellent code generation quality for complex 3D modeling tasks.
-
-**Alternative models** (if you have less RAM):
-- `qwen2.5-coder:14b` - Good balance of quality and resource usage
-- `deepseek-coder-v2:16b` - Another strong code-focused model
-- `llama3.1:8b` - Lighter weight option (may require more sanitization fixes)
+**Other alternatives:**
+- `deepseek-coder-v2:16b` - Another strong code model
+- `codestral:22b` - Mistral's code-focused model
+- `llama3.1:8b` - Lightweight option (may need more error fixes)
 
 Optional environment variable:
 
-- `OLLAMA_MODEL` – name of the model to use (defaults to `qwen2.5-coder:32b` if not set).
+- `OLLAMA_MODEL` – name of the model to use (defaults to `qwen2.5-coder:14b` if not set).
 
 ### 3. Run the Tauri app (UI + HTTP server)
 
@@ -142,7 +154,7 @@ For **Do It**, the code is not executed automatically anywhere; you can copy/pas
 - The HTTP API is implemented in `src-tauri/src/main.rs` and `src-tauri/src/blender_bridge.rs` using Axum.
 - LLM calls are defined in `src-tauri/src/ollama.rs`:
   - Uses a single non‑streaming `/api/chat` call against Ollama.
-  - Honors `OLLAMA_MODEL`; otherwise falls back to `qwen2.5-coder:32b`.
+  - Honors `OLLAMA_MODEL`; otherwise falls back to `qwen2.5-coder:14b`.
   - Uses temperature 0.7 to balance creativity and consistency.
 - The Blender add‑on:
   - Lives in `blender_addon/blender_helper.py`.
