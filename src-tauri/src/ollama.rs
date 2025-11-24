@@ -6,14 +6,16 @@ pub async fn ask(system: &str, user: &str) -> Result<String, reqwest::Error> {
         .timeout(Duration::from_secs(300))
         .build()?;
 
-    let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama3.2".to_string());
+    let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "qwen2.5-coder:32b".to_string());
 
     // Request a non-streaming response so we can parse a single JSON
     // object with the answer instead of an NDJSON stream.
+    // Temperature 0.7 balances creativity with consistency, allowing the model to reason
+    // through complex 3D modeling problems while maintaining code correctness.
     let body = json!({
         "model": model,
         "stream": false,
-        "options": { "temperature": 0.0, "seed": 1 },
+        "options": { "temperature": 0.7 },
         "messages": [
             { "role": "system", "content": system },
             { "role": "user", "content": user }
