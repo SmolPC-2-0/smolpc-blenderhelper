@@ -2,11 +2,18 @@ use serde_json::json;
 use tokio::time::{Duration, sleep};
 
 pub async fn ask(system: &str, user: &str) -> Result<String, reqwest::Error> {
+    // Increase timeout to 10 minutes for large models like qwen2.5-coder:32b
+    // Can be overridden via env var OLLAMA_TIMEOUT_SECS
+    let timeout_secs = std::env::var("OLLAMA_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(600);
+
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(300))
+        .timeout(Duration::from_secs(timeout_secs))
         .build()?;
 
-    let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "qwen2.5-coder:32b".to_string());
+    let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "qwen2.5-coder:14b".to_string());
 
     // Request a non-streaming response so we can parse a single JSON
     // object with the answer instead of an NDJSON stream.
@@ -26,7 +33,16 @@ pub async fn ask(system: &str, user: &str) -> Result<String, reqwest::Error> {
         .post("http://127.0.0.1:11434/api/chat")
         .json(&body)
         .send()
-        .await?
+        .await
+        .map_err(|e| {
+            eprintln!("Ollama request failed: {} (model: {}, timeout: {}s)", e, model, timeout_secs);
+            if e.is_timeout() {
+                eprintln!("TIMEOUT: Consider increasing OLLAMA_TIMEOUT_SECS env var or using a smaller model");
+            } else if e.is_connect() {
+                eprintln!("CONNECTION: Is Ollama running? Check: http://127.0.0.1:11434");
+            }
+            e
+        })?
         .error_for_status()?;
 
     let j: serde_json::Value = resp.json().await?;
