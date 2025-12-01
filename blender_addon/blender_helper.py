@@ -125,8 +125,52 @@ class BLENDERHELPER_OT_do_it(bpy.types.Operator):
                 except Exception:
                     pass
             except Exception as ex:
-                self.report({'ERROR'}, f"Macro execution error: {ex}")
+                error_msg = str(ex)
+                self.report({'WARNING'}, f"Macro error: {ex}. Attempting auto-fix...")
                 print("--- AI Macro (sanitized) ---\n" + code + "\n--- end ---")
+                print(f"--- Error: {error_msg} ---")
+
+                # Try to auto-fix the error
+                try:
+                    fix_res = requests.post(
+                        "http://127.0.0.1:17890/blender/fix_error",
+                        json={"goal": goal, "code": code, "error": error_msg},
+                        timeout=120,
+                    )
+                    fix_res.raise_for_status()
+                    fixed_data = fix_res.json()
+                    fixed_code = fixed_data.get("code", "")
+                    fixed_code = self._extract_code_block(fixed_code)
+
+                    if not fixed_code:
+                        self.report({'ERROR'}, "Auto-fix failed: No code returned")
+                        return {'CANCELLED'}
+
+                    print("--- Attempting fixed code ---")
+                    # Try executing the fixed code
+                    if area and region:
+                        wrapped = (
+                            prefix
+                            + "\nwith bpy.context.temp_override(window=bpy.context.window, area=area, region=region):\n"
+                            + indent(fixed_code, "    ")
+                        )
+                        exec(compile(wrapped, "<ai-macro-fixed>", "exec"), {"bpy": bpy, "area": area, "region": region})
+                    else:
+                        wrapped = prefix + "\n" + fixed_code
+                        exec(compile(wrapped, "<ai-macro-fixed>", "exec"), {"bpy": bpy})
+
+                    self.report({'INFO'}, "Auto-fix successful! Macro executed")
+                    try:
+                        requests.post(
+                            "http://127.0.0.1:17890/blender/remember",
+                            json={"event": f"Auto-fixed and executed: '{goal}'"},
+                            timeout=2,
+                        )
+                    except Exception:
+                        pass
+                except Exception as fix_ex:
+                    self.report({'ERROR'}, f"Auto-fix failed: {fix_ex}")
+                    print(f"--- Auto-fix error: {fix_ex} ---")
         except Exception as e:
             self.report({'ERROR'}, f"Do It failed: {e}")
         return {'FINISHED'}

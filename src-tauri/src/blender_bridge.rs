@@ -1,7 +1,7 @@
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use crate::ollama::ask;
+use crate::ollama::{ask, ask_deliberate};
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
 
@@ -13,6 +13,13 @@ pub struct StepReply { pub step: String }
 
 #[derive(Serialize)]
 pub struct MacroReply { pub code: String }
+
+#[derive(Deserialize)]
+pub struct ErrorRequest {
+    pub goal: String,
+    pub code: String,
+    pub error: String,
+}
 
 // In-memory conversation memory (persists for the lifetime of the app)
 static MEMORY: Lazy<Mutex<Vec<String>>> = Lazy::new(|| Mutex::new(Vec::new()));
@@ -67,30 +74,66 @@ pub async fn next_step(Json(req): Json<Request>) -> Json<StepReply> {
 pub async fn run_macro(Json(req): Json<Request>) -> Json<MacroReply> {
     let system = r#"You are an expert Blender Python programmer specializing in procedural 3D modeling.
 
+CRITICAL: Before writing any code, carefully analyze ALL requirements in the goal:
+- What specific properties are mentioned? (rounded, smooth, subdivided, textured, etc.)
+- What modifiers or techniques are needed? (bevel for rounded edges, subdivision, etc.)
+- Don't default to simple primitives if the goal asks for specific features!
+
 Your strengths:
 - Deep understanding of Blender's bpy API, modifiers, and mesh operations
 - Ability to decompose complex 3D shapes into geometric primitives and operations
 - Strong reasoning about spatial relationships, transforms, and hierarchies
 - Writing clear, executable Python code that reliably builds 3D models
 
-1. Understand the goal - What object or scene? What style? Level of detail?
-2. Reason about geometry - How can this be built from primitives, modifiers, or bmesh?
-3. Plan the construction - What's the sequence? Which techniques work best?
-4. Consider safety - Will this code handle edge cases gracefully?
-5. Write clean, commented code that explains your geometric reasoning
+Required Analysis Process:
+1. Understand the goal - What object? What SPECIFIC PROPERTIES? What style? Level of detail?
+2. Identify requirements - Are there modifiers needed? (rounded = Bevel, smooth = Subdivision, etc.)
+3. Reason about geometry - How can this be built from primitives + modifiers + operations?
+4. Plan the construction - What's the complete sequence including ALL modifiers?
+5. Consider safety - Will this code handle edge cases gracefully?
+6. Write clean, commented code that implements ALL requirements
 
 Blender API Knowledge:
 
 PRIMITIVES: Use bpy.ops.mesh.primitive_*_add() for: cube, sphere, cylinder, cone, torus, plane, circle, grid
 
 MODIFIERS: Create with obj.modifiers.new(name, type) - Key types:
-- 'SUBSURF' - Subdivision Surface (properties: levels, render_levels)
-- 'ARRAY' - Array duplication (properties: count, relative_offset_displace)
-- 'MIRROR' - Mirror symmetry (properties: use_axis[], use_clip)
-- 'SOLIDIFY' - Add thickness (properties: thickness)
-- 'BOOLEAN' - Cut/union shapes (properties: object, operation)
-- 'SKIN' - Tree/tube structures from edges
-- Others: SimpleDeform, Bevel, Screw, Remesh
+
+BEVEL Modifier - 'BEVEL' (for rounded edges):
+  - width: float (size of bevel, e.g., 0.02)
+  - segments: int (smoothness, e.g., 4)
+  - limit_method: 'ANGLE' or 'NONE' or 'WEIGHT'
+  - angle_limit: float (in radians if using ANGLE method)
+  - affect: 'EDGES' or 'VERTICES'
+  CORRECT: bevel = obj.modifiers.new(name="Bevel", type='BEVEL')
+           bevel.width = 0.02
+           bevel.segments = 4
+  WRONG: bevel.harden_edges (does NOT exist!)
+
+SUBSURF Modifier - 'SUBSURF' (for smooth surfaces):
+  - levels: int (viewport subdivisions, 1-6)
+  - render_levels: int (render subdivisions, 1-6)
+  - subdivision_type: 'CATMULL_CLARK' or 'SIMPLE'
+  CORRECT: subsurf = obj.modifiers.new(name="Subdivision", type='SUBSURF')
+           subsurf.levels = 2
+           subsurf.render_levels = 3
+
+ARRAY Modifier - 'ARRAY':
+  - count: int (number of duplicates)
+  - relative_offset_displace: Vector (x, y, z offset)
+  - use_relative_offset: bool
+
+MIRROR Modifier - 'MIRROR':
+  - use_axis: [bool, bool, bool] (X, Y, Z)
+  - use_clip: bool
+  - mirror_object: Object reference
+
+SOLIDIFY Modifier - 'SOLIDIFY':
+  - thickness: float
+
+BOOLEAN Modifier - 'BOOLEAN':
+  - object: Object reference
+  - operation: 'DIFFERENCE', 'UNION', 'INTERSECT'
 
 EDIT MODE: Some operations require edit mode (subdivide, extrude, inset, bevel, loop cuts)
 - Enter: bpy.ops.object.mode_set(mode='EDIT')
@@ -103,6 +146,20 @@ BMESH: For precise procedural geometry (import bmesh)
 
 MATERIALS: Set up Principled BSDF for colors/properties
 - Create material, enable nodes, get BSDF node, set inputs
+
+CRITICAL - COMMON API MISTAKES TO AVOID:
+
+NEVER use these non-existent properties (they will cause errors):
+  ❌ bevel.harden_edges - DOES NOT EXIST
+  ❌ bevel.harden_normals - DOES NOT EXIST
+  ❌ obj.smooth_shade - Use mesh.polygons[].use_smooth instead
+  ❌ bpy.ops.object.shade_smooth_by_angle - Use bpy.ops.object.shade_smooth() only
+
+CORRECT ways to shade smooth:
+  ✓ bpy.ops.object.shade_smooth() - Simple smooth shading
+  ✓ for face in obj.data.polygons: face.use_smooth = True
+
+ONLY use properties that are documented above. If you're not sure a property exists, DON'T use it.
 
 Key Principles for Robust Code:
 
@@ -127,30 +184,49 @@ Key Principles for Robust Code:
    - Don't assume objects or modifiers always exist
    - Use try/except for operations that might fail
 
-5. CORRECT API USAGE
+5. CORRECT API USAGE - ONLY USE DOCUMENTED PROPERTIES
    - Primitives: mesh.primitive_*_add (NOT object.*_add)
    - Extrude: extrude_region_move (NOT mesh.extrude)
    - Dimensions: obj.dimensions.x (NOT obj.width)
    - Scale: obj.scale tuple (NOT obj.size)
    - Vertices are read-only: use bmesh for modification
+   - ONLY use modifier properties listed above
 
 Response Format:
 
-First, briefly explain your approach (2-4 sentences):
-- What geometric strategy will you use?
-- Why is this the best approach for this shape?
+First, ANALYZE the requirements (3-5 sentences):
+- What are ALL the specific properties mentioned in the goal?
+- What primitives, modifiers, and operations are needed for EACH property?
+- What is your complete geometric strategy to satisfy ALL requirements?
 
 Then, provide ONE complete Python code block that:
 - Imports needed modules (bpy, math, bmesh if needed)
-- Uses clear variable names and comments
+- Creates the base primitive
+- Applies ALL necessary modifiers (Bevel for rounded, Subdivision for smooth, etc.)
+- ONLY uses properties documented above (NO hallucinated properties!)
+- Uses clear variable names and comments explaining each modifier
 - Handles edge cases safely
-- Is immediately executable in Blender
-- Produces the desired result
+- Is immediately executable in Blender without errors
+- Produces the desired result with ALL requested properties
 
-Think creatively about how to combine primitives, modifiers, and operations to achieve the goal efficiently.
+CRITICAL: Double-check every modifier property against the documentation above before using it!
+
+Examples:
+- "rounded corners" → Add Bevel modifier with appropriate segments
+- "smooth surface" → Add Subdivision Surface modifier
+- "textured" → Create and apply materials with textures
+- "subdivided" → Add Subdivision Surface or use subdivide in edit mode
+
+Think creatively about how to combine primitives, modifiers, and operations to achieve ALL aspects of the goal.
 "#;
 
     let user = format!(r#"GOAL: "{}"
+
+INSTRUCTIONS:
+1. Read the goal CAREFULLY and identify ALL specific properties (rounded, smooth, subdivided, etc.)
+2. List out what modifiers/operations each property requires
+3. Write code that implements the base primitive + ALL modifiers for each property
+4. DO NOT skip any requested features - if it says "rounded corners", add a Bevel modifier!
 
 STYLE: "infer from goal; if unspecified, choose reasonable defaults (e.g., low‑poly vs. realistic)"
 
@@ -159,7 +235,9 @@ NOTES: "Use the short‑term memory below to avoid duplicates and be consistent 
 PRIOR CONTEXT (newest last):
 {}
 "#, req.goal, render_memory());
-    let out = match ask(system, &user).await {
+    // Use deliberate reasoning: first plan, then generate code
+    // This gives the model time to analyze requirements before coding
+    let out = match ask_deliberate(system, &user, 2).await {
         Ok(t) if !t.trim().is_empty() => t,
         _ => String::from("# No code returned - LLM offline"),
     };
@@ -175,4 +253,50 @@ pub async fn remember_api(Json(n): Json<Note>) -> Json<serde_json::Value> {
         remember(n.event);
     }
     Json(json!({"ok": true}))
+}
+
+pub async fn fix_error(Json(req): Json<ErrorRequest>) -> Json<MacroReply> {
+    let system = r#"You are a Blender Python debugging expert. The user ran code that produced an error.
+
+Your job:
+1. Read the error message carefully
+2. Identify the exact problem (usually a non-existent property or incorrect API usage)
+3. Fix ONLY the broken parts - keep everything else the same
+4. Return the complete corrected code
+
+Common error patterns:
+- "has no attribute 'X'" → Property X doesn't exist, find the correct alternative
+- "AttributeError" → Wrong property name or method
+- "TypeError" → Wrong parameter type or count
+
+CRITICAL RULES:
+- If a property doesn't exist, DON'T guess - remove it or find documented alternative
+- Keep the same overall structure and logic
+- Only fix what's broken
+- Test your knowledge: if unsure about a property, leave it out rather than guess
+- Add a comment explaining what you fixed
+
+Return ONLY the fixed Python code, no explanations outside the code."#;
+
+    let user = format!(r#"ORIGINAL GOAL: {}
+
+CODE THAT FAILED:
+```python
+{}
+```
+
+ERROR MESSAGE:
+{}
+
+Fix the error and return the corrected code. Add a comment showing what you changed."#,
+        req.goal, req.code, req.error
+    );
+
+    let out = match ask(system, &user).await {
+        Ok(t) if !t.trim().is_empty() => t,
+        _ => String::from("# Could not fix error - LLM offline"),
+    };
+
+    remember(format!("Fixed error: {}", req.error.lines().next().unwrap_or("")));
+    Json(MacroReply { code: out })
 }
