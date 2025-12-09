@@ -37,24 +37,8 @@ class BLENDERHELPER_OT_do_it(bpy.types.Operator):
 
     def execute(self, context):
         goal = context.window_manager.blender_helper_goal
-        # 1) Try QuickBuilder first for robustness on common shapes/edits
-        try:
-            if QuickBuilder.try_handle(goal):
-                self.report({'INFO'}, "QuickBuilder executed goal")
-                try:
-                    requests.post(
-                        "http://127.0.0.1:17890/blender/remember",
-                        json={"event": f"QuickBuilder executed: '{goal}'"},
-                        timeout=2,
-                    )
-                except Exception:
-                    pass
-                return {'FINISHED'}
-        except Exception as qb_err:
-            # Fall back to LLM path on any QuickBuilder error
-            print(f"QuickBuilder error: {qb_err}")
-
-        # 2) Fallback: call server LLM and execute sanitized code
+        # QuickBuilder disabled - using LLM for all requests
+        # Call server LLM and execute sanitized code
         try:
             res = requests.post(
                 "http://127.0.0.1:17890/blender/run_macro",
