@@ -1,156 +1,429 @@
-# Blender Helper
+# Blender Learning Assistant
 
-Local Blender modeling copilot powered by a Tauri desktop app, a Blender add‑on, and a local Ollama LLM.
+An **offline, educational AI assistant** for Blender that helps students learn 3D modeling through context-aware Q&A, guided tutorials, and smart suggestions.
 
-> Status: early experiment – expect bugs and rough edges.
+> **Version 4.0** - Educational Focus (Learning, not automation!)
 
-## Overview
+## 🚀 Quick Start
 
-- Type a high‑level goal (for example, “create a low‑poly duck on a plane”).
-- Click **Next Step** to get a numbered plan you can follow in Blender.
-- Click **Do It** to have code generated that builds the object/scene in Blender.
-- A Blender add‑on can call the same local HTTP API and execute the generated `bpy` code for you.
-- Recent actions are remembered in a short in‑memory log so the assistant can stay consistent within one session.
+**New in v4.0:** Single executable that runs everything!
 
-## Components
+1. **Download** the latest release (`.msi` installer for Windows)
+2. **Install** and launch the app
+3. **First launch:** Python dependencies install automatically (1-2 min)
+4. **Done!** The app handles the RAG server startup automatically
 
-- **Tauri desktop app** (`src-tauri`, UI in `src/index.html` & `src/main.js`)  
-  Opens a small window with a Goal input and the **Next Step** / **Do It** buttons.
-- **Local HTTP server** (`src-tauri/src/main.rs`, `src-tauri/src/blender_bridge.rs`)  
-  Runs on `http://127.0.0.1:17890` and exposes:
-  - `POST /blender/next_step` → `{ step: string }`
-  - `POST /blender/run_macro` → `{ code: string }`
-  - `POST /blender/remember` → `{ ok: true }`
-- **Blender add‑on** (`blender_addon/blender_helper.py`)  
-  Adds a “Blender Helper” panel in the 3D Viewport sidebar with the same Goal / Next Step / Do It flow.
-- **Local LLM via Ollama** (`src-tauri/src/ollama.rs`)
-  Calls `http://127.0.0.1:11434/api/chat` and defaults to the `qwen2.5-coder:32b` model unless `OLLAMA_MODEL` is set.
+No manual terminal commands needed - just click and go! See [INSTALL.md](INSTALL.md) for detailed instructions.
 
-All traffic is local: Blender and the Tauri UI only talk to the HTTP server on `127.0.0.1`, and the server only talks to the local Ollama instance.
+---
 
-## Requirements
+## 🎓 What This Does
 
-- Blender 3.x or later (the prompts target Blender 4.x terminology).
-- Rust and Cargo installed (for building the Tauri backend).
-- Node.js and `npm` (to run the `@tauri-apps/cli` from `package.json`).
-- A running **Ollama** instance with `qwen2.5-coder:32b` or another capable code model.
-- In Blender's Python environment, the `requests` package must be available (the add‑on imports it).
+**This is NOT a code generator.** Instead, it's your personal Blender tutor that:
 
-## Setup & Running
+- ✅ **Answers your questions** about Blender using RAG-enhanced AI
+- ✅ **Suggests what to try next** based on your current scene
+- ✅ **Guides you through tutorials** with step-by-step validation
+- ✅ **Runs completely offline** after initial setup
+- ✅ **Works on low-end hardware** using quantized 7B models
 
-### 1. Install JavaScript and Rust dependencies
+**Example Questions:**
+- "What is a modifier?"
+- "How do I add materials?"
+- "What does Edit Mode do?"
 
-From the project root:
+---
+
+## 🏗️ Architecture
+
+```
+Your Computer (All Offline):
+┌────────────────────────────────────────────────┐
+│                                                │
+│  🖥️  Tauri Frontend (Desktop App)              │
+│      Main learning interface                   │
+│      ├── Q&A system                            │
+│      ├── Tutorial viewer                       │
+│      └── Suggestion engine                     │
+│                ↕ HTTP                           │
+│                                                │
+│  🧠 RAG Server (Flask - Port 5000)             │
+│      http://127.0.0.1:5000                     │
+│      ├── Educational Q&A endpoint              │
+│      ├── Scene analysis                        │
+│      ├── Tutorial management                   │
+│      └── RAG (Blender API docs)                │
+│                ↕ HTTP                           │
+│                                                │
+│  🤖 Ollama (Local LLM - Port 11434)            │
+│      Model: qwen2.5:7b-instruct-q4_K_M         │
+│      Educational explanations (no code!)       │
+│                                                │
+│  🎨 Blender Addon                              │
+│      Sidebar panel ("Learn" tab)               │
+│      ├── Scene data export                     │
+│      ├── Question input                        │
+│      └── Suggestion display                    │
+│                                                │
+└────────────────────────────────────────────────┘
+```
+
+**Everything runs on localhost—completely offline!**
+
+---
+
+## 📋 Requirements
+
+- **OS:** Windows, macOS, or Linux
+- **RAM:** 6-8GB minimum (for quantized 7B model)
+- **Storage:** ~5GB for model and dependencies
+- **Python:** 3.8+ (for RAG server)
+- **Node.js:** 16+ (for Tauri frontend)
+- **Rust:** Latest stable (for Tauri build)
+- **Blender:** 3.0+ (4.x recommended)
+- **Ollama:** Local LLM server
+
+---
+
+## 🛠️ Setup for Development
+
+If you want to build from source or contribute:
+
+### 1. Install Ollama & Model (2 min)
+
+Download from [ollama.com](https://ollama.com) and install.
+
+Pull the educational model:
+```bash
+ollama pull qwen2.5:7b-instruct-q4_K_M
+```
+
+**Why this model?**
+- Only ~4.7GB (quantized)
+- Great for educational explanations
+- Runs on 6-8GB RAM
+
+**For even lower-end hardware:**
+```bash
+ollama pull qwen2.5:7b-instruct-q3_K_M  # ~3.5GB
+```
+
+### 2. Install Build Tools
+
+- **Python** 3.10+: https://python.org/downloads/
+- **Node.js** 18+: https://nodejs.org/
+- **Rust**: https://rustup.rs/
+
+### 3. Clone and Build
 
 ```bash
+git clone <repository-url>
+cd smolpc-blenderhelper
 npm install
+npm run tauri build
 ```
 
-This installs the Tauri CLI used by the project. Rust dependencies are handled automatically by Cargo the first time the app is built or run.
-
-### 2. Start Ollama with Qwen2.5-Coder
-
-Make sure Ollama is installed and running on the same machine, listening on the default `127.0.0.1:11434`.
-
-1. Download and install Ollama from its official site.
-2. Pull the recommended model:
-
+Or use the build script:
 ```bash
-ollama pull qwen2.5-coder:32b
+# Windows
+build_app.bat
+
+# Linux/macOS
+chmod +x build_app.sh
+./build_app.sh
 ```
 
-This model provides excellent code generation quality for complex 3D modeling tasks.
+### 4. Development Mode
 
-**Alternative models** (if you have less RAM):
-- `qwen2.5-coder:14b` - Good balance of quality and resource usage
-- `deepseek-coder-v2:16b` - Another strong code-focused model
-- `llama3.1:8b` - Lighter weight option (may require more sanitization fixes)
-
-Optional environment variable:
-
-- `OLLAMA_MODEL` – name of the model to use (defaults to `qwen2.5-coder:32b` if not set).
-
-### 3. Run the Tauri app (UI + HTTP server)
-
-From the project root:
+**Note:** In development mode, you still need to manually start the RAG server:
 
 ```bash
+# Terminal 1: RAG Server
+cd rag_system
+python server.py
+
+# Terminal 2: Tauri App (auto-starts server in production builds)
 npm run tauri dev
 ```
 
-This will:
+### 5. Install Blender Addon (30 sec)
 
-- Build and run the Rust crate in `src-tauri`.
-- Start the local HTTP API on `http://127.0.0.1:17890`.
-- Open the “Blender Helper” desktop window (using `src/index.html` & `src/main.js` as the frontend).
+**Windows:** Double-click `install_to_blender.bat`
 
-Leave this process running while you use the Blender add‑on.
+**Manual:**
+1. Open Blender
+2. Edit → Preferences → Add-ons → Install
+3. Select: `blender_addon/blender_helper_http.py`
+4. Enable "3D View: Blender Learning Assistant"
+5. Press `N` in viewport → Click "Learn" tab
 
-To build a packaged application instead of running in dev mode:
+---
+
+## 💡 How to Use
+
+### From Tauri App (Main Interface)
+
+1. **Ask Questions**
+   - Type: "What is a modifier?"
+   - Click "Ask"
+   - Get detailed, educational answers
+
+2. **Get Suggestions**
+   - Click "Get Suggestions"
+   - See 3-5 things to try next based on your scene
+
+3. **Follow Tutorials**
+   - Click "Load Tutorials"
+   - Choose a tutorial
+   - Follow step-by-step with validation
+
+### From Blender (In-Viewport)
+
+1. Press `N` to open sidebar
+2. Click "Learn" tab
+3. Ask questions directly in Blender
+4. See current scene info
+5. Get quick suggestions
+
+---
+
+## 📚 Built-in Tutorials
+
+1. **Basic 3D Modeling** (5 steps)
+   - Create objects, enter Edit Mode, add modifiers
+
+2. **Introduction to Modifiers** (4 steps)
+   - Bevel, Array, Subdivision Surface
+
+3. **Basic Materials** (4 steps)
+   - Add colors and shading
+
+4. **Navigating the 3D Viewport** (5 steps)
+   - Camera controls and navigation
+
+**Add your own tutorials** by editing `rag_system/tutorials.json`
+
+---
+
+## 🎯 Example Questions
+
+**Beginner:**
+- "What does the Tab key do?"
+- "How do I move objects?"
+- "What is Edit Mode?"
+
+**Intermediate:**
+- "How do modifiers work?"
+- "What's the difference between Object and Edit Mode?"
+- "How do I create materials?"
+
+**Advanced:**
+- "How do Array and Mirror modifiers work together?"
+- "What's the Subdivision Surface algorithm?"
+- "How does the shader editor work?"
+
+---
+
+## 📁 Project Structure
+
+```
+smolpc-blenderhelper/
+├── src/                        # Tauri frontend (Svelte 5 + Tailwind CSS 4)
+│   ├── index.html             # HTML entry point
+│   ├── main.ts                # Svelte mount point
+│   ├── App.svelte             # Main app component
+│   ├── app.css                # Tailwind CSS 4 theme
+│   └── lib/                   # Components, stores, types, utils
+│
+├── src-tauri/                  # Tauri desktop shell (Rust)
+│   ├── src/
+│   │   └── main.rs            # Tauri app entry point
+│   └── tauri.conf.json        # App configuration
+│
+├── rag_system/                 # Educational AI backend
+│   ├── server.py              # Flask server with endpoints
+│   ├── tutorials.json         # Tutorial content
+│   ├── build_database.py      # RAG indexer
+│   └── simple_db/             # Vector database
+│
+├── blender_addon/
+│   └── blender_helper_http.py # Scene export addon
+│
+├── start_server.bat            # RAG server launcher (Windows)
+├── start_server.sh             # RAG server launcher (Linux/Mac)
+├── GETTING_STARTED.md          # Comprehensive guide
+└── README.md                   # This file
+```
+
+---
+
+## 🔧 Configuration
+
+### Change Model
+
+```bash
+# Windows (PowerShell)
+$env:OLLAMA_MODEL="qwen2.5:7b-instruct-q3_K_M"
+
+# Linux/Mac
+export OLLAMA_MODEL="qwen2.5:7b-instruct-q3_K_M"
+```
+
+### Adjust Window Size
+
+Edit `src-tauri/tauri.conf.json`:
+```json
+{
+  "app": {
+    "windows": [
+      { "width": 1200, "height": 900 }
+    ]
+  }
+}
+```
+
+---
+
+## 🐛 Troubleshooting
+
+### "Cannot connect to RAG server"
+
+**Check if server is running:**
+```bash
+curl http://127.0.0.1:5000/health
+```
+
+**Expected:** `{"status": "ok", "rag_enabled": true}`
+
+### "Ollama not running"
+
+```bash
+# Check status
+curl http://127.0.0.1:11434/api/tags
+
+# Start if needed
+ollama serve
+```
+
+### Slow Responses
+
+Use smaller quantization:
+```bash
+ollama pull qwen2.5:7b-instruct-q2_K
+export OLLAMA_MODEL="qwen2.5:7b-instruct-q2_K"
+```
+
+### Addon Not Showing
+
+1. Check Blender console for errors
+2. Verify addon is enabled in Preferences
+3. Check `requests` library is available in Blender
+
+**More solutions:** See [GETTING_STARTED.md](GETTING_STARTED.md)
+
+---
+
+## 🎓 Why Educational Focus?
+
+### What Changed in v4.0
+
+| Feature | Old (v3.0) | New (v4.0) |
+|---------|-----------|-----------|
+| **Purpose** | Code generation | Education |
+| **Model** | qwen2.5-coder (code) | qwen2.5 (general) |
+| **Output** | Python code | Explanations |
+| **Execution** | Automatic | Manual learning |
+| **Hardware** | 20GB+ RAM | 6-8GB RAM |
+| **Focus** | Automation | Understanding |
+
+### Why We Changed
+
+1. **Smaller models can't reliably generate code** - Too many API hallucinations
+2. **Students learn by doing, not watching** - Copy-paste doesn't teach
+3. **Accessibility** - Runs on student laptops (low RAM)
+4. **Safety** - No risk of executing bad code
+5. **True learning** - Understanding > Automation
+
+---
+
+## 📊 Technical Details
+
+### RAG System
+
+- **Embeddings:** all-MiniLM-L6-v2 (sentence-transformers)
+- **Storage:** NumPy arrays (simple, no ChromaDB needed)
+- **Documents:** ~150 Blender API pages
+- **Retrieval:** Cosine similarity, top-3 results
+
+### LLM Configuration
+
+- **Model:** qwen2.5:7b-instruct-q4_K_M
+- **Quantization:** 4-bit (Q4_K_M)
+- **Temperature:** 0.7 (creative but accurate)
+- **Timeout:** 60s per request
+- **Mode:** Non-streaming
+
+### Validation System
+
+Checks if students:
+- Created required objects (`has_object_type`)
+- Added specific modifiers (`has_modifier`)
+- Reached progress milestones (`object_count`)
+
+---
+
+## 🚀 Build for Production
 
 ```bash
 npm run tauri build
 ```
 
-### 4. Install the Blender add‑on
+Installer output: `src-tauri/target/release/bundle/`
 
-1. Open Blender.
-2. Go to `Edit` → `Preferences…` → `Add-ons`.
-3. Click **Install…**.
-4. Select `blender_addon/blender_helper.py` from this repository.
-5. Enable the add‑on named **“Blender Helper AI Link”**.
+**Distribute:**
+- Tauri installer (Windows .msi, Mac .dmg, Linux .deb)
+- RAG server folder (`rag_system/`)
+- Blender addon file
+- GETTING_STARTED.md
 
-If Blender reports `ModuleNotFoundError: requests`, install `requests` into Blender’s Python:
+---
 
-```bash
-# from a shell, using Blender's bundled python
-path\to\blender\python.exe -m pip install requests
-```
+## 📄 License
 
-Restart Blender after installing if needed.
+MIT License - See LICENSE file
 
-## Usage
+---
 
-### From Blender
+## 🙏 Acknowledgments
 
-1. Ensure the Tauri app (step 3 above) is running so the HTTP server is available on `127.0.0.1:17890`.
-2. In Blender, open a 3D Viewport and press **N** to show the right‑hand sidebar.
-3. Go to the **Blender Helper** tab / panel.
-4. Enter a high‑level goal in the **Goal** field, for example:
-   - `Create a low-poly duck on a plane`
-   - `Make a simple sci-fi corridor with emissive panels`
-5. Click:
-   - **Next Step** – sends your goal to `/blender/next_step` and shows a numbered list of steps as an info message.
-   - **Do It** – first tries a built‑in “QuickBuilder” for common primitives (cube, plane, cylinder, low‑poly duck, etc.).  
-     If that can’t handle the request, it calls `/blender/run_macro`, sanitizes the returned `bpy` script, and executes it in the current scene.
+- **Ollama Team** - Local LLM infrastructure
+- **Alibaba Qwen Team** - Qwen2.5 models
+- **Sentence Transformers** - Embedding models
+- **Blender Foundation** - Incredible software and docs
+- **Tauri Team** - Modern desktop framework
 
-The add‑on also sends short “memory” events to `/blender/remember` so the backend can keep some lightweight session context.
+---
 
-### From the desktop window
+## 📞 Support
 
-You can use the Tauri window on its own without Blender:
+- **Full Guide:** [GETTING_STARTED.md](GETTING_STARTED.md)
+- **Issues:** [GitHub Issues](https://github.com/SmolPC-2-0/smolpc-blenderhelper/issues)
 
-1. Run `npm run tauri dev`.
-2. Type a goal into the **Goal** field.
-3. Click **Next Step** or **Do It**.
-4. The result (steps or Python code) appears in the output box in the window.
+---
 
-For **Do It**, the code is not executed automatically anywhere; you can copy/paste it into Blender’s Text Editor and run it there if you want to test it manually.
+## ⚡ Quick Reference
 
-## Configuration & Internals (optional)
+| Task | Command |
+|------|---------|
+| **Start RAG Server** | `python rag_system/server.py` |
+| **Start Tauri App** | `npm run tauri dev` |
+| **Start Ollama** | `ollama serve` |
+| **Build Database** | `python rag_system/build_database.py` |
+| **Test Server** | `curl http://127.0.0.1:5000/health` |
+| **Install Addon** | `install_to_blender.bat` (Windows) |
 
-- The HTTP API is implemented in `src-tauri/src/main.rs` and `src-tauri/src/blender_bridge.rs` using Axum.
-- LLM calls are defined in `src-tauri/src/ollama.rs`:
-  - Uses a single non‑streaming `/api/chat` call against Ollama.
-  - Honors `OLLAMA_MODEL`; otherwise falls back to `qwen2.5-coder:32b`.
-  - Uses temperature 0.7 to balance creativity and consistency.
-- The Blender add‑on:
-  - Lives in `blender_addon/blender_helper.py`.
-  - Provides operators `ai.next_step` and `ai.do_it` and a `BLENDERHELPER_PT_panel` UI panel.
-  - Includes a `QuickBuilder` path for robust, non‑LLM creation of common primitives and a low‑poly duck.
+---
 
-## Caveats
+**Happy Learning! 🎓🎨**
 
-- This project is still under active development and may contain bugs.
-- Generated scripts should generally be safe, but always save your Blender file and inspect the code if you are unsure.
-- The in‑memory “conversation” context is per‑process only; it resets each time you restart the Tauri app.
+*Transform from beginner to Blender pro with AI-powered guidance.*

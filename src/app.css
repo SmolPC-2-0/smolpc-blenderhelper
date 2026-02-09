@@ -1,0 +1,126 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --radius: 0.625rem;
+  --blender-orange: oklch(0.7 0.15 30);
+  --blender-blue: oklch(0.6 0.15 240);
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --primary: var(--blender-orange);
+  --border: oklch(0.922 0 0);
+  --muted: oklch(0.961 0 0);
+  --muted-foreground: oklch(0.455 0.012 286);
+  --card: oklch(1 0 0);
+  --input: oklch(0.898 0 0);
+  --accent: oklch(0.961 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+}
+
+.dark {
+  --background: oklch(0.17 0.005 264);
+  --foreground: oklch(0.98 0.002 264);
+  --border: oklch(0.28 0.01 264);
+  --muted: oklch(0.22 0.008 264);
+  --muted-foreground: oklch(0.65 0.01 264);
+  --card: oklch(0.2 0.007 264);
+  --input: oklch(0.24 0.008 264);
+  --accent: oklch(0.25 0.009 264);
+  --destructive: oklch(0.705 0.237 29.696);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-weight: 600;
+  }
+
+  h1 {
+    font-size: 1.5rem;
+  }
+
+  h2 {
+    font-size: 1.25rem;
+  }
+
+  h3 {
+    font-size: 1.125rem;
+  }
+
+  a {
+    color: var(--primary);
+  }
+
+  a:hover {
+    text-decoration: underline;
+  }
+
+  code {
+    background-color: var(--muted);
+    padding: 0.125rem 0.25rem;
+    border-radius: 0.25rem;
+    font-size: 0.875rem;
+    font-family: ui-monospace, monospace;
+  }
+
+  pre {
+    background-color: var(--muted);
+    padding: 1rem;
+    border-radius: 0.5rem;
+    overflow-x: auto;
+  }
+
+  pre code {
+    background-color: transparent;
+    padding: 0;
+  }
+
+  ul {
+    list-style-type: disc;
+    list-style-position: inside;
+  }
+
+  ol {
+    list-style-type: decimal;
+    list-style-position: inside;
+  }
+
+  li {
+    margin-top: 0.25rem;
+    margin-bottom: 0.25rem;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background-color: transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: var(--border);
+    border-radius: 9999px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background-color: var(--muted-foreground);
+  }
+}
