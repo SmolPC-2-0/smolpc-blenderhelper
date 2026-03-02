@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2.0.0",
   "productName": "Blender Learning Assistant",
-  "version": "4.0.0",
+  "version": "6.0.0",
   "identifier": "app.blender.learning",
   "build": {
     "devUrl": "http://localhost:1420",
@@ -11,7 +11,11 @@
   },
   "bundle": {
     "resources": [
-      "../rag_system/**/*"
+      "resources/rag_system/simple_db/embeddings.npy",
+      "resources/rag_system/simple_db/metadata.json",
+      "resources/rag_system/server.py",
+      "resources/rag_system/requirements_server.txt",
+      "../models/**/*"
     ]
   },
   "app": {
@@ -20,7 +24,7 @@
       { "label": "main", "title": "Blender Learning Assistant", "width": 1000, "height": 750 }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self'; img-src 'self' data: asset:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' http://127.0.0.1:5179 http://127.0.0.1:11434 tauri:;",
       "capabilities": [
         {
           "identifier": "main-capability",

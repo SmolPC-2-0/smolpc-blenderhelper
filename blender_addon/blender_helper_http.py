@@ -3,7 +3,6 @@ Blender Learning Assistant - HTTP Client Version
 
 Educational addon that helps students learn Blender through:
 - Scene-aware Q&A
-- Guided tutorials with validation
 - Smart suggestions based on current work
 
 Connects to local RAG server for AI-powered educational guidance.
@@ -11,11 +10,12 @@ Connects to local RAG server for AI-powered educational guidance.
 
 import bpy
 import traceback
+import time
 
 bl_info = {
     "name": "Blender Learning Assistant",
     "author": "SmolPC",
-    "version": (4, 0, 0),
+    "version": (6, 0, 0),
     "blender": (3, 0, 0),
     "category": "3D View",
     "description": "Educational assistant for learning Blender (offline)",
@@ -62,7 +62,7 @@ def gather_scene_info():
 # HTTP Client Functions
 # ============================================================================
 
-def ask_question(question, server_url="http://127.0.0.1:5000"):
+def ask_question(question, server_url="http://127.0.0.1:5179"):
     """Ask an educational question to the RAG server."""
     import requests
 
@@ -104,7 +104,7 @@ def ask_question(question, server_url="http://127.0.0.1:5000"):
         }
 
 
-def get_suggestions(server_url="http://127.0.0.1:5000"):
+def get_suggestions(server_url="http://127.0.0.1:5179"):
     """Get learning suggestions based on current scene."""
     import requests
 
@@ -124,7 +124,7 @@ def get_suggestions(server_url="http://127.0.0.1:5000"):
         data = response.json()
 
         return {
-            'suggestions': data.get('suggestions', ''),
+            'suggestions': data.get('suggestions', []),
             'error': None
         }
 
@@ -140,7 +140,7 @@ def get_suggestions(server_url="http://127.0.0.1:5000"):
         }
 
 
-def update_scene_data(server_url="http://127.0.0.1:5000"):
+def update_scene_data(server_url="http://127.0.0.1:5179"):
     """Send current scene data to server for caching."""
     import requests
 
@@ -150,7 +150,7 @@ def update_scene_data(server_url="http://127.0.0.1:5000"):
         response = requests.post(
             f"{server_url}/scene/update",
             json={'scene_data': scene_data},
-            timeout=5
+            timeout=0.5
         )
 
         response.raise_for_status()
@@ -162,12 +162,12 @@ def update_scene_data(server_url="http://127.0.0.1:5000"):
         return {'success': False, 'error': str(e)}
 
 
-def check_server_health(server_url="http://127.0.0.1:5000"):
+def check_server_health(server_url="http://127.0.0.1:5179", timeout=5):
     """Check if the RAG server is running."""
     import requests
 
     try:
-        response = requests.get(f"{server_url}/health", timeout=5)
+        response = requests.get(f"{server_url}/health", timeout=timeout)
         response.raise_for_status()
         data = response.json()
 
@@ -175,18 +175,21 @@ def check_server_health(server_url="http://127.0.0.1:5000"):
             'running': True,
             'rag_enabled': data.get('rag_enabled', False),
             'rag_docs': data.get('rag_docs', 0),
-            'error': None
+            'error': None,
+            'last_updated': time.time()
         }
 
     except requests.exceptions.ConnectionError:
         return {
             'running': False,
-            'error': 'Server not running'
+            'error': 'Server not running',
+            'last_updated': time.time()
         }
     except Exception as e:
         return {
             'running': False,
-            'error': str(e)
+            'error': str(e),
+            'last_updated': time.time()
         }
 
 
@@ -234,13 +237,13 @@ class BLENDERHELPER_OT_ask_question(bpy.types.Operator):
             print(answer)
             print("="*60 + "\n")
 
-            self.report({'INFO'}, "✅ Answer ready! Check the panel or console.")
+            self.report({'INFO'}, "Answer ready. Check the panel or console.")
             return {'FINISHED'}
 
         except Exception as e:
             error_msg = str(e)
             self.report({'ERROR'}, f"Failed: {error_msg}")
-            print(f"❌ Error: {error_msg}")
+            print(f"[ERROR] {error_msg}")
             traceback.print_exc()
             return {'CANCELLED'}
 
@@ -267,23 +270,28 @@ class BLENDERHELPER_OT_get_suggestions(bpy.types.Operator):
                 self.report({'ERROR'}, "No suggestions received")
                 return {'CANCELLED'}
 
+            if isinstance(suggestions, list):
+                suggestions_text = "\n".join(suggestions)
+            else:
+                suggestions_text = str(suggestions)
+
             # Store suggestions
-            context.scene.blenderhelper_suggestions = suggestions
+            context.scene.blenderhelper_suggestions = suggestions_text
 
             # Show in console
             print("\n" + "="*60)
             print("Learning Suggestions:")
             print("="*60)
-            print(suggestions)
+            print(suggestions_text)
             print("="*60 + "\n")
 
-            self.report({'INFO'}, "✅ Got suggestions! Check the panel.")
+            self.report({'INFO'}, "Got suggestions. Check the panel.")
             return {'FINISHED'}
 
         except Exception as e:
             error_msg = str(e)
             self.report({'ERROR'}, f"Failed: {error_msg}")
-            print(f"❌ Error: {error_msg}")
+            print(f"[ERROR] {error_msg}")
             traceback.print_exc()
             return {'CANCELLED'}
 
@@ -335,12 +343,12 @@ class BLENDERHELPER_OT_test_server(bpy.types.Operator):
 
         if health['running']:
             if health['rag_enabled']:
-                msg = f"✅ Server running! RAG: {health['rag_docs']} docs"
+                msg = f"Server running. RAG: {health['rag_docs']} docs"
             else:
-                msg = "✅ Server running! (RAG disabled)"
+                msg = "Server running (RAG disabled)"
             self.report({'INFO'}, msg)
         else:
-            self.report({'ERROR'}, f"❌ Server not running: {health['error']}")
+            self.report({'ERROR'}, f"Server not running: {health['error']}")
             print("\nTo start the server:")
             print("  cd rag_system")
             print("  python server.py")
@@ -414,16 +422,16 @@ class BLENDERHELPER_PT_panel(bpy.types.Panel):
         box = layout.box()
         box.label(text="System Status:", icon='SETTINGS')
 
-        # Check server
-        health = check_server_health()
+        # Read cached server health (non-blocking - safe for UI thread)
+        health = get_cached_server_health()
 
         if health['running']:
-            box.label(text="✅ Server: Running", icon='CHECKMARK')
+            box.label(text="Server: Running", icon='CHECKMARK')
 
             if health['rag_enabled']:
                 box.label(text=f"   Docs: {health['rag_docs']}")
         else:
-            box.label(text="❌ Server: Not running", icon='ERROR')
+            box.label(text="Server: Not running", icon='ERROR')
             box.label(text="   python rag_system/server.py")
 
         # Test button
@@ -435,15 +443,36 @@ class BLENDERHELPER_PT_panel(bpy.types.Panel):
 # Scene Data Sync Timer
 # ============================================================================
 
+# Global cache for server health status (updated by timer, read by UI)
+_server_health_cache = {
+    'running': False,
+    'rag_enabled': False,
+    'rag_docs': 0,
+    'error': 'Not checked yet',
+    'last_updated': 0
+}
+
+
 def sync_scene_timer():
-    """Periodic timer to send scene data to server."""
-    # Only sync if server is running
-    health = check_server_health()
+    """Periodic timer to send scene data to server and update health cache."""
+    global _server_health_cache
+
+    # Update health cache (non-blocking for UI)
+    health = check_server_health(timeout=0.5)
+    _server_health_cache = {**_server_health_cache, **health}
+
+    # Only sync scene if server is running
     if health['running']:
         update_scene_data()
 
     # Re-register timer (every 5 seconds)
     return 5.0
+
+
+def get_cached_server_health():
+    """Get cached server health status (non-blocking, safe for UI thread)."""
+    global _server_health_cache
+    return _server_health_cache.copy()
 
 
 # ============================================================================

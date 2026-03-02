@@ -1,362 +1,633 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { chatsStore } from '$lib/stores/chats.svelte';
-  import { settingsStore } from '$lib/stores/settings.svelte';
-  import { ragStore } from '$lib/stores/rag.svelte';
-  import { blenderStore } from '$lib/stores/blender.svelte';
-  import { askQuestion } from '$lib/utils/api';
+	import { onMount } from 'svelte';
+	import Sidebar from '$lib/components/Sidebar.svelte';
+	import WorkspaceHeader from '$lib/components/layout/WorkspaceHeader.svelte';
+	import WorkspaceControls from '$lib/components/layout/WorkspaceControls.svelte';
+	import ConversationView from '$lib/components/chat/ConversationView.svelte';
+	import ComposerBar from '$lib/components/chat/ComposerBar.svelte';
+	import { chatsStore } from '$lib/stores/chats.svelte';
+	import { settingsStore } from '$lib/stores/settings.svelte';
+	import { ragStore } from '$lib/stores/rag.svelte';
+	import { blenderStore } from '$lib/stores/blender.svelte';
+	import { inferenceStore } from '$lib/stores/inference.svelte';
+	import type { Message } from '$lib/types/chat';
 
-  import Sidebar from '$lib/components/Sidebar.svelte';
-  import ChatMessage from '$lib/components/ChatMessage.svelte';
-  import ChatInput from '$lib/components/ChatInput.svelte';
-  import StatusIndicator from '$lib/components/StatusIndicator.svelte';
-  import BlenderIndicator from '$lib/components/BlenderIndicator.svelte';
-  import ScenePanel from '$lib/components/ScenePanel.svelte';
-  import SuggestionList from '$lib/components/SuggestionList.svelte';
+	let isSidebarOpen = $state(true);
+	let isMobileViewport = $state(false);
+	let isWaitingForResponse = $state(false);
+	let serverReady = $state(false);
+	let appError = $state<string | null>(null);
+	let isSwitchingBackend = $state(false);
+	let showQuickExamples = $state(true);
+	let userHasScrolledUp = $state(false);
+	let bottomOffset = $state(0);
 
-  import { Menu, Moon, Sun, MessageSquare, Sparkles } from 'lucide-svelte';
+	let messagesContainer: HTMLDivElement | undefined = $state();
+	let stopRagPolling: (() => void) | null = null;
+	let stopBlenderPolling: (() => void) | null = null;
+	let cancelRequested = $state(false);
+	let currentStreamingChatId = $state<string | null>(null);
+	let currentStreamingMessageId = $state<string | null>(null);
 
-  type Tab = 'chat' | 'suggestions';
+	const currentChat = $derived(chatsStore.currentChat);
+	const messages = $derived(currentChat?.messages ?? []);
+	const pageTitle = $derived(currentChat?.title ?? 'New Blender Chat');
+	const currentBackend = $derived(
+		ragStore.status.backend === 'onnx' || ragStore.status.backend === 'ollama'
+			? ragStore.status.backend
+			: settingsStore.generationBackend
+	);
+	const showScrollToLatest = $derived(userHasScrolledUp && messages.length > 0);
+	const latestAssistantMessageId = $derived(
+		[...messages].reverse().find((message) => message.role === 'assistant')?.id ?? null
+	);
 
-  let currentTab = $state<Tab>('chat');
-  let isSidebarOpen = $state(true);
-  let isWaitingForResponse = $state(false);
-  let serverReady = $state(false);
-  let chatContainer = $state<HTMLDivElement>();
-  let stopRagPolling: (() => void) | null = null;
-  let stopBlenderPolling: (() => void) | null = null;
+	function setMessagesContainer(element: HTMLDivElement) {
+		messagesContainer = element;
+	}
 
-  const currentChat = $derived(chatsStore.currentChat);
-  const messages = $derived(currentChat?.messages ?? []);
+	function updateViewportState(source: MediaQueryList | MediaQueryListEvent) {
+		isMobileViewport = source.matches;
+		if (isMobileViewport) {
+			isSidebarOpen = false;
+		} else if (!isSidebarOpen) {
+			isSidebarOpen = true;
+		}
+	}
 
-  // Auto-scroll logic
-  let shouldAutoScroll = $state(true);
+	function isAtBottom(): boolean {
+		if (!messagesContainer) return true;
+		const threshold = 5;
+		const distanceFromBottom =
+			messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight;
+		return distanceFromBottom <= threshold;
+	}
 
-  function checkScrollPosition() {
-    if (!chatContainer) return;
-    const { scrollTop, scrollHeight, clientHeight } = chatContainer;
-    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-    shouldAutoScroll = distanceFromBottom < 100;
-  }
+	function markScrollIntentUp() {
+		userHasScrolledUp = true;
+	}
 
-  function scrollToBottom() {
-    if (chatContainer && shouldAutoScroll && settingsStore.autoScrollChat) {
-      setTimeout(() => {
-        if (chatContainer) {
-          chatContainer.scrollTop = chatContainer.scrollHeight;
-        }
-      }, 0);
-    }
-  }
+	function handleScroll() {
+		if (isAtBottom()) {
+			userHasScrolledUp = false;
+		}
+	}
 
-  $effect(() => {
-    // Auto-scroll when messages change
-    if (messages) {
-      scrollToBottom();
-    }
-  });
+	function scrollToBottom() {
+		if (!messagesContainer || userHasScrolledUp || !settingsStore.autoScrollChat) return;
+		messagesContainer.scrollTop = messagesContainer.scrollHeight;
+	}
 
-  // Initialize chat if none exists
-  $effect(() => {
-    if (!currentChat && chatsStore.chats.length === 0) {
-      chatsStore.createChat();
-    } else if (!currentChat && chatsStore.chats.length > 0) {
-      chatsStore.setCurrentChat(chatsStore.chats[0].id);
-    }
-  });
+	function handleScrollToLatest() {
+		userHasScrolledUp = false;
+		if (!messagesContainer) return;
+		messagesContainer.scrollTop = messagesContainer.scrollHeight;
+	}
 
-  async function handleSendMessage(content: string) {
-    if (!currentChat || isWaitingForResponse) return;
+	function isTypingTarget(target: EventTarget | null): boolean {
+		if (!(target instanceof HTMLElement)) return false;
+		if (target.isContentEditable) return true;
+		return (
+			target.tagName === 'TEXTAREA' ||
+			target.tagName === 'INPUT' ||
+			target.tagName === 'SELECT'
+		);
+	}
 
-    const chatId = currentChat.id;
+	function handleKeyDown(event: KeyboardEvent) {
+		const isMac = navigator.platform.toUpperCase().includes('MAC');
+		const modifierKey = isMac ? event.metaKey : event.ctrlKey;
+		const typingInInput = isTypingTarget(event.target);
 
-    // Add user message
-    const userMessage = {
-      id: crypto.randomUUID(),
-      role: 'user' as const,
-      content,
-      timestamp: Date.now()
-    };
-    chatsStore.addMessage(chatId, userMessage);
+		if (!typingInInput && modifierKey && event.key === '\\') {
+			event.preventDefault();
+			isSidebarOpen = !isSidebarOpen;
+		}
+	}
 
-    // Add assistant message placeholder
-    const assistantMessageId = crypto.randomUUID();
-    const assistantMessage = {
-      id: assistantMessageId,
-      role: 'assistant' as const,
-      content: '',
-      timestamp: Date.now(),
-      isStreaming: true
-    };
-    chatsStore.addMessage(chatId, assistantMessage);
+	function calculateBottomOffset() {
+		const visualViewportHeight = window.visualViewport?.height || window.innerHeight;
+		const windowHeight = window.innerHeight;
+		bottomOffset = Math.max(0, windowHeight - visualViewportHeight);
+	}
 
-    isWaitingForResponse = true;
+	async function handleSendMessage(content: string) {
+		if (isWaitingForResponse || inferenceStore.isGenerating) return;
 
-    try {
-      // Get scene context if available
-      const scene_context = blenderStore.getSceneContext();
+		const activeChat = currentChat ?? chatsStore.createChat();
+		if (!activeChat) return;
 
-      // Call RAG server
-      const response = await askQuestion({
-        question: content,
-        scene_context: scene_context ?? undefined
-      });
+		showQuickExamples = false;
+		userHasScrolledUp = false;
 
-      // Update assistant message with response
-      chatsStore.updateMessage(chatId, assistantMessageId, {
-        content: response.answer,
-        isStreaming: false
-      });
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Failed to get response';
-      chatsStore.updateMessage(chatId, assistantMessageId, {
-        content: `Error: ${errorMessage}`,
-        isStreaming: false
-      });
-    } finally {
-      isWaitingForResponse = false;
-    }
-  }
+		const chatId = activeChat.id;
+		const userMessage: Message = {
+			id: crypto.randomUUID(),
+			role: 'user',
+			content,
+			timestamp: Date.now()
+		};
+		chatsStore.addMessage(chatId, userMessage);
 
-  function handleExampleSelect(example: string) {
-    handleSendMessage(example);
-  }
+		const assistantMessageId = crypto.randomUUID();
+		const assistantMessage: Message = {
+			id: assistantMessageId,
+			role: 'assistant',
+			content: '',
+			timestamp: Date.now(),
+			isStreaming: true
+		};
+		chatsStore.addMessage(chatId, assistantMessage);
+		scrollToBottom();
 
-  function toggleSidebar() {
-    isSidebarOpen = !isSidebarOpen;
-  }
+		isWaitingForResponse = true;
+		cancelRequested = false;
+		currentStreamingChatId = chatId;
+		currentStreamingMessageId = assistantMessageId;
 
-  function toggleTheme() {
-    const newTheme = settingsStore.theme === 'dark' ? 'light' : 'dark';
-    settingsStore.setTheme(newTheme);
-  }
+		let accumulatedText = '';
 
-  onMount(async () => {
-    // Wait for server to be ready before showing UI
-    let retries = 0;
-    const maxRetries = 30; // 30 seconds
+		try {
+			const sceneContext = blenderStore.getSceneContext();
+			const metrics = await inferenceStore.askQuestionStream(
+				content,
+				sceneContext,
+				(token: string) => {
+					if (cancelRequested) return;
+					accumulatedText += token;
+					chatsStore.updateMessage(chatId, assistantMessageId, {
+						content: accumulatedText,
+						isStreaming: true
+					});
+					scrollToBottom();
+				}
+			);
 
-    while (retries < maxRetries && !ragStore.isConnected) {
-      await ragStore.checkStatus();
-      if (ragStore.isConnected) {
-        serverReady = true;
-        break;
-      }
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      retries++;
-    }
+			const finalContent =
+				accumulatedText.length > 0
+					? accumulatedText
+					: inferenceStore.error
+						? `Error: ${inferenceStore.error}`
+						: 'Generation cancelled.';
 
-    if (!ragStore.isConnected) {
-      // Show warning but still allow app to load
-      console.warn('Server did not respond within 30 seconds');
-      serverReady = true; // Still show the UI
-    }
+			chatsStore.updateMessage(chatId, assistantMessageId, {
+				content: finalContent,
+				isStreaming: false
+			});
 
-    // Start RAG server polling
-    stopRagPolling = ragStore.startPolling(settingsStore.pollingInterval);
+			if (metrics) {
+				console.log(
+					`[App] Generated ${metrics.total_tokens} tokens at ${metrics.tokens_per_second.toFixed(1)} tok/s`
+				);
+			}
+		} catch (error) {
+			const errorMessage = error instanceof Error ? error.message : 'Failed to get response';
+			chatsStore.updateMessage(chatId, assistantMessageId, {
+				content: `Error: ${errorMessage}`,
+				isStreaming: false
+			});
+		} finally {
+			currentStreamingChatId = null;
+			currentStreamingMessageId = null;
+			isWaitingForResponse = false;
+		}
+	}
 
-    // Start Blender scene polling
-    stopBlenderPolling = blenderStore.startPolling(5000);
+	function handleExampleSelect(prompt: string) {
+		handleSendMessage(prompt);
+	}
 
-    // Cleanup on unmount
-    return () => {
-      if (stopRagPolling) {
-        stopRagPolling();
-      }
-      if (stopBlenderPolling) {
-        stopBlenderPolling();
-      }
-    };
-  });
+	function findNearestUserPrompt(messageId: string): string | null {
+		if (!currentChat) return null;
+		const messageIndex = currentChat.messages.findIndex((message) => message.id === messageId);
+		if (messageIndex < 0) return null;
+
+		for (let index = messageIndex - 1; index >= 0; index -= 1) {
+			const candidate = currentChat.messages[index];
+			if (candidate.role === 'user') {
+				return candidate.content;
+			}
+		}
+
+		return null;
+	}
+
+	function handleRegenerateMessage(messageId: string) {
+		if (inferenceStore.isGenerating) return;
+		const sourcePrompt = findNearestUserPrompt(messageId);
+		if (!sourcePrompt) return;
+		handleSendMessage(sourcePrompt);
+	}
+
+	function handleContinueMessage(messageId: string) {
+		if (inferenceStore.isGenerating) return;
+		const basePrompt = findNearestUserPrompt(messageId);
+		const continuationPrompt = basePrompt
+			? `Continue your previous response to: "${basePrompt}". Expand with more detail and examples.`
+			: 'Continue your previous response with additional detail and examples.';
+		handleSendMessage(continuationPrompt);
+	}
+
+	function handleBranchFromMessage(messageId: string) {
+		if (!currentChat) return;
+		const messageIndex = currentChat.messages.findIndex((message) => message.id === messageId);
+		if (messageIndex < 0) return;
+
+		const branchSource = currentChat.messages.slice(0, messageIndex + 1);
+		if (branchSource.length === 0) return;
+
+		const targetModel = currentChat.model ?? 'blender-assistant';
+		const branchChat = chatsStore.createChat(targetModel);
+
+		for (const message of branchSource) {
+			chatsStore.addMessage(branchChat.id, {
+				...message,
+				id: crypto.randomUUID(),
+				isStreaming: false
+			});
+		}
+
+		chatsStore.updateChatTitle(branchChat.id, `${currentChat.title} · Branch`);
+		showQuickExamples = false;
+		userHasScrolledUp = false;
+	}
+
+	async function handleCancelGeneration() {
+		cancelRequested = true;
+
+		try {
+			await inferenceStore.cancel();
+		} catch (error) {
+			console.error('[App] Failed to cancel generation:', error);
+		}
+
+		if (currentStreamingChatId && currentStreamingMessageId) {
+			chatsStore.updateMessage(currentStreamingChatId, currentStreamingMessageId, {
+				isStreaming: false
+			});
+		}
+
+		currentStreamingChatId = null;
+		currentStreamingMessageId = null;
+		isWaitingForResponse = false;
+	}
+
+	async function toggleBackend() {
+		if (isSwitchingBackend) return;
+
+		const target = currentBackend === 'onnx' ? 'ollama' : 'onnx';
+		isSwitchingBackend = true;
+
+		try {
+			await settingsStore.setGenerationBackend(target);
+			await ragStore.checkStatus();
+		} catch (error) {
+			appError = error instanceof Error ? error.message : 'Failed to switch generation backend';
+		} finally {
+			isSwitchingBackend = false;
+		}
+	}
+
+	onMount(() => {
+		const media = window.matchMedia('(max-width: 980px)');
+		const viewportListener = (event: MediaQueryListEvent) => updateViewportState(event);
+		updateViewportState(media);
+		media.addEventListener('change', viewportListener);
+
+		calculateBottomOffset();
+		const handleResize = () => calculateBottomOffset();
+		window.addEventListener('resize', handleResize);
+		window.visualViewport?.addEventListener('resize', handleResize);
+		window.addEventListener('keydown', handleKeyDown);
+
+		try {
+			if (!chatsStore.currentChat && chatsStore.chats.length === 0) {
+				chatsStore.createChat();
+			} else if (!chatsStore.currentChat && chatsStore.chats.length > 0) {
+				chatsStore.setCurrentChat(chatsStore.chats[0].id);
+			}
+		} catch (error) {
+			appError = error instanceof Error ? error.message : 'Error initializing chat';
+		}
+
+		(async () => {
+			try {
+				let retries = 0;
+				const maxRetries = 30;
+
+				while (retries < maxRetries && !ragStore.isConnected) {
+					await ragStore.checkStatus();
+					if (ragStore.isConnected) {
+						serverReady = true;
+						break;
+					}
+					await new Promise((resolve) => setTimeout(resolve, 1000));
+					retries += 1;
+				}
+
+				if (!ragStore.isConnected) {
+					serverReady = true;
+				}
+
+				stopRagPolling = ragStore.startPolling(settingsStore.pollingInterval);
+				stopBlenderPolling = blenderStore.startPolling(5000);
+			} catch (error) {
+				appError = error instanceof Error ? error.message : 'Error initializing application';
+				serverReady = true;
+			}
+		})();
+
+		return () => {
+			media.removeEventListener('change', viewportListener);
+			window.removeEventListener('resize', handleResize);
+			window.visualViewport?.removeEventListener('resize', handleResize);
+			window.removeEventListener('keydown', handleKeyDown);
+			if (stopRagPolling) stopRagPolling();
+			if (stopBlenderPolling) stopBlenderPolling();
+		};
+	});
+
+	$effect(() => {
+		currentChat?.id;
+		userHasScrolledUp = false;
+	});
+
+	$effect(() => {
+		if (messages.length > 0) {
+			scrollToBottom();
+		}
+	});
 </script>
 
 {#if !serverReady}
-  <!-- Loading Screen -->
-  <div class="flex h-screen w-screen items-center justify-center bg-[var(--background)]">
-    <div class="text-center">
-      <!-- Spinner -->
-      <div class="mb-6 inline-block h-12 w-12 animate-spin rounded-full border-4 border-solid border-[var(--primary)] border-r-transparent"></div>
-
-      <h2 class="text-2xl font-semibold mb-2 text-[var(--foreground)]">
-        Starting Blender Learning Assistant...
-      </h2>
-      <p class="text-sm text-[var(--muted-foreground)]">
-        Initializing AI server
-      </p>
-    </div>
-  </div>
+	<div class="app-loading">
+		<div class="app-loading__card">
+			<div class="app-loading__spinner"></div>
+			<h2>Starting Blender Learning Assistant</h2>
+			<p>Initializing AI server</p>
+		</div>
+	</div>
 {:else}
-<div class="flex h-screen overflow-hidden">
-  <!-- Sidebar -->
-  <Sidebar isOpen={isSidebarOpen} onClose={toggleSidebar} />
+	<div class="app-shell">
+		{#if appError}
+			<div class="app-shell__error-wrap">
+				<div class="app-shell__error">
+					<span>{appError}</span>
+					<button type="button" onclick={() => (appError = null)} aria-label="Dismiss error">Dismiss</button>
+				</div>
+			</div>
+		{/if}
 
-  <!-- Main Content -->
-  <div class="flex-1 flex flex-col min-w-0">
-    <!-- Header -->
-    <header class="border-b border-[var(--border)] bg-[var(--card)] px-4 py-3 shadow-sm">
-      <div class="flex items-center justify-between">
-        <div class="flex items-center gap-3">
-          <button
-            onclick={toggleSidebar}
-            class="p-2 hover:bg-[var(--accent)] rounded-lg transition-all hover:scale-105 active:scale-95"
-            aria-label="Toggle sidebar"
-          >
-            <Menu size={20} class="transition-transform" />
-          </button>
+		<div class={`sidebar-stage ${isSidebarOpen ? 'sidebar-stage--open' : 'sidebar-stage--closed'}`}>
+			<Sidebar onClose={() => (isSidebarOpen = false)} />
+		</div>
 
-          <h1 class="text-lg font-semibold text-[var(--foreground)]">
-            Blender Learning Assistant
-          </h1>
-        </div>
+		<div class="workspace-shell">
+			<WorkspaceHeader
+				title={pageTitle}
+				showSidebarToggle={!isSidebarOpen}
+				{currentBackend}
+				{isSwitchingBackend}
+				onOpenSidebar={() => (isSidebarOpen = true)}
+				onToggleBackend={toggleBackend}
+			/>
 
-        <div class="flex items-center gap-2">
-          <StatusIndicator />
-          <BlenderIndicator />
+			<WorkspaceControls />
 
-          <button
-            onclick={toggleTheme}
-            class="p-2 hover:bg-[var(--accent)] rounded-lg transition-all hover:scale-105 active:scale-95"
-            aria-label="Toggle theme"
-          >
-            {#if settingsStore.theme === 'dark'}
-              <Sun size={20} class="transition-transform rotate-0 hover:rotate-12" />
-            {:else}
-              <Moon size={20} class="transition-transform rotate-0 hover:-rotate-12" />
-            {/if}
-          </button>
-        </div>
-      </div>
-    </header>
+			<ConversationView
+				{messages}
+				showScenePanel={settingsStore.showScenePanel}
+				{latestAssistantMessageId}
+				{showQuickExamples}
+				onSelectExample={handleExampleSelect}
+				onToggleExamples={(show) => (showQuickExamples = show)}
+				onUserScrollUp={markScrollIntentUp}
+				onScroll={handleScroll}
+				{showScrollToLatest}
+				onScrollToLatest={handleScrollToLatest}
+				onRegenerateMessage={handleRegenerateMessage}
+				onContinueMessage={handleContinueMessage}
+				onBranchFromMessage={handleBranchFromMessage}
+				onContainerReady={setMessagesContainer}
+			/>
 
-    <!-- Tabs -->
-    <div class="border-b border-[var(--border)] bg-[var(--card)] px-4">
-      <div class="flex gap-1">
-        <button
-          onclick={() => { currentTab = 'chat'; }}
-          class="px-4 py-3 font-medium text-sm transition-all relative rounded-t-lg
-                 {currentTab === 'chat'
-                   ? 'text-[var(--primary)] bg-[var(--primary)]/5'
-                   : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--accent)]'}"
-        >
-          <div class="flex items-center gap-2">
-            <MessageSquare size={16} class="transition-transform {currentTab === 'chat' ? 'scale-110' : ''}" />
-            Chat
-          </div>
-          {#if currentTab === 'chat'}
-            <div class="absolute bottom-0 left-0 right-0 h-0.5 bg-[var(--primary)] rounded-full"></div>
-          {/if}
-        </button>
-
-        <button
-          onclick={() => { currentTab = 'suggestions'; }}
-          class="px-4 py-3 font-medium text-sm transition-all relative rounded-t-lg
-                 {currentTab === 'suggestions'
-                   ? 'text-[var(--primary)] bg-[var(--primary)]/5'
-                   : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--accent)]'}"
-        >
-          <div class="flex items-center gap-2">
-            <Sparkles size={16} class="transition-transform {currentTab === 'suggestions' ? 'scale-110' : ''}" />
-            Suggestions
-          </div>
-          {#if currentTab === 'suggestions'}
-            <div class="absolute bottom-0 left-0 right-0 h-0.5 bg-[var(--primary)] rounded-full"></div>
-          {/if}
-        </button>
-      </div>
-    </div>
-
-    <!-- Tab Content -->
-    <div class="flex-1 overflow-hidden flex flex-col">
-      {#if currentTab === 'chat'}
-        <!-- Chat View -->
-        <div
-          bind:this={chatContainer}
-          onscroll={checkScrollPosition}
-          class="flex-1 overflow-y-auto scrollbar-thin"
-        >
-          {#if messages.length === 0}
-            <!-- Empty State - ChatGPT Style -->
-            <div class="flex flex-col items-center justify-center h-full px-6">
-              <div class="w-full max-w-3xl mx-auto text-center mb-8">
-                <h1 class="text-3xl md:text-4xl font-medium text-[var(--foreground)] mb-10">
-                  What can I help you create in Blender today?
-                </h1>
-
-                <!-- Quick Examples Grid -->
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 max-w-2xl mx-auto">
-                  <button
-                    onclick={() => handleExampleSelect('How do I create a UV map for my model?')}
-                    class="p-4 rounded-lg border border-[var(--border)] hover:bg-[var(--accent)] transition-all text-left hover:border-[var(--primary)]"
-                  >
-                    <div class="text-sm font-medium mb-1 text-[var(--foreground)]">UV Mapping</div>
-                    <div class="text-xs text-[var(--muted-foreground)]">Create a UV map for my model</div>
-                  </button>
-
-                  <button
-                    onclick={() => handleExampleSelect('What are the different types of modifiers in Blender?')}
-                    class="p-4 rounded-lg border border-[var(--border)] hover:bg-[var(--accent)] transition-all text-left hover:border-[var(--primary)]"
-                  >
-                    <div class="text-sm font-medium mb-1 text-[var(--foreground)]">Modifiers Guide</div>
-                    <div class="text-xs text-[var(--muted-foreground)]">Explain different modifier types</div>
-                  </button>
-
-                  <button
-                    onclick={() => handleExampleSelect('How can I improve my render times?')}
-                    class="p-4 rounded-lg border border-[var(--border)] hover:bg-[var(--accent)] transition-all text-left hover:border-[var(--primary)]"
-                  >
-                    <div class="text-sm font-medium mb-1 text-[var(--foreground)]">Rendering Optimization</div>
-                    <div class="text-xs text-[var(--muted-foreground)]">Speed up my render times</div>
-                  </button>
-
-                  <button
-                    onclick={() => handleExampleSelect('What is the best way to model hard surface objects?')}
-                    class="p-4 rounded-lg border border-[var(--border)] hover:bg-[var(--accent)] transition-all text-left hover:border-[var(--primary)]"
-                  >
-                    <div class="text-sm font-medium mb-1 text-[var(--foreground)]">Hard Surface Modeling</div>
-                    <div class="text-xs text-[var(--muted-foreground)]">Best practices for hard surfaces</div>
-                  </button>
-                </div>
-              </div>
-            </div>
-          {:else}
-            <!-- Messages -->
-            <div class="max-w-4xl mx-auto w-full">
-              {#if settingsStore.showScenePanel}
-                <div class="px-6 pt-4 pb-2">
-                  <ScenePanel />
-                </div>
-              {/if}
-
-              {#each messages as message (message.id)}
-                <ChatMessage {message} />
-              {/each}
-            </div>
-          {/if}
-        </div>
-
-        <!-- Chat Input -->
-        <ChatInput
-          onSubmit={handleSendMessage}
-          disabled={isWaitingForResponse || !ragStore.isConnected}
-          placeholder={ragStore.isConnected
-            ? 'Ask about Blender...'
-            : 'Waiting for RAG server connection...'}
-        />
-      {:else if currentTab === 'suggestions'}
-        <!-- Suggestions View -->
-        <div class="flex-1 overflow-y-auto scrollbar-thin p-4">
-          <div class="max-w-4xl mx-auto">
-            {#if settingsStore.showScenePanel}
-              <div class="mb-4">
-                <ScenePanel />
-              </div>
-            {/if}
-
-            <SuggestionList />
-          </div>
-        </div>
-      {/if}
-    </div>
-  </div>
-</div>
+			<ComposerBar
+				isGenerating={inferenceStore.isGenerating}
+				disabled={isWaitingForResponse || !ragStore.isConnected}
+				placeholder={ragStore.isConnected
+					? 'Ask about your Blender scene (Shift+Enter for newline)...'
+					: 'Waiting for backend connection...'}
+				{bottomOffset}
+				onSend={handleSendMessage}
+				onCancel={handleCancelGeneration}
+			/>
+		</div>
+	</div>
 {/if}
+
+<style>
+	.app-loading {
+		display: grid;
+		place-items: center;
+		height: 100vh;
+		background: var(--surface-canvas);
+	}
+
+	.app-loading__card {
+		display: grid;
+		gap: 0.5rem;
+		text-align: center;
+	}
+
+	.app-loading__spinner {
+		width: 2.5rem;
+		height: 2.5rem;
+		margin: 0 auto 0.35rem;
+		border-radius: 999px;
+		border: 3px solid color-mix(in srgb, var(--color-primary) 24%, transparent);
+		border-right-color: transparent;
+		animation: spin 0.9s linear infinite;
+	}
+
+	.app-loading__card h2 {
+		font-size: 1.15rem;
+		font-weight: 620;
+	}
+
+	.app-loading__card p {
+		font-size: 0.85rem;
+		color: var(--color-muted-foreground);
+	}
+
+	.app-shell {
+		display: flex;
+		height: 100vh;
+		overflow: hidden;
+		padding: 0.72rem;
+		gap: 0.72rem;
+		background: var(--surface-canvas);
+		position: relative;
+	}
+
+	.app-shell::before {
+		content: '';
+		position: absolute;
+		inset: 0;
+		pointer-events: none;
+		background:
+			radial-gradient(
+				75rem 38rem at 8% -10%,
+				color-mix(in srgb, var(--color-primary) 10%, transparent),
+				transparent 66%
+			),
+			radial-gradient(
+				52rem 30rem at 100% 100%,
+				color-mix(in srgb, var(--color-primary) 6%, transparent),
+				transparent 72%
+			);
+		mix-blend-mode: screen;
+	}
+
+	.app-shell::after {
+		content: '';
+		position: absolute;
+		inset: 0;
+		pointer-events: none;
+		background:
+			linear-gradient(
+				180deg,
+				rgb(255 255 255 / 6%),
+				transparent 12%,
+				transparent 88%,
+				rgb(0 0 0 / 20%)
+			);
+		opacity: 0.35;
+	}
+
+	.app-shell__error-wrap {
+		position: absolute;
+		top: 0.95rem;
+		left: 50%;
+		transform: translateX(-50%);
+		z-index: 80;
+		width: min(92vw, 40rem);
+	}
+
+	.app-shell__error {
+		display: flex;
+		align-items: center;
+		gap: 0.7rem;
+		padding: 0.55rem 0.7rem;
+		border-radius: var(--radius-lg);
+		border: 1px solid color-mix(in srgb, var(--color-destructive) 45%, var(--color-border));
+		background: color-mix(in srgb, var(--color-destructive) 12%, transparent);
+		color: color-mix(in srgb, var(--color-destructive) 86%, var(--color-foreground));
+		font-size: 0.77rem;
+	}
+
+	.app-shell__error span {
+		flex: 1;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.app-shell__error button {
+		border: 0;
+		background: transparent;
+		color: inherit;
+		font-size: 0.72rem;
+		cursor: pointer;
+		padding: 0.2rem 0.35rem;
+		border-radius: var(--radius-sm);
+	}
+
+	.app-shell__error button:hover {
+		background: color-mix(in srgb, var(--color-destructive) 18%, transparent);
+	}
+
+	.workspace-shell {
+		position: relative;
+		z-index: 1;
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		border-radius: calc(var(--radius-xl) + 8px);
+		border: 1px solid var(--outline-soft);
+		background:
+			linear-gradient(
+				180deg,
+				color-mix(in srgb, var(--surface-elevated) 94%, black),
+				var(--surface-subtle) 42%,
+				color-mix(in srgb, var(--surface-subtle) 92%, black)
+			),
+			var(--surface-subtle);
+		box-shadow: var(--shadow-strong);
+	}
+
+	.sidebar-stage {
+		display: flex;
+		height: 100%;
+		width: 17.75rem;
+		min-width: 0;
+		overflow: hidden;
+		transition: width 145ms cubic-bezier(0.2, 0.86, 0.34, 1);
+		will-change: width;
+		z-index: 2;
+	}
+
+	.sidebar-stage :global(.sidebar) {
+		height: 100%;
+		transition:
+			transform 145ms cubic-bezier(0.2, 0.86, 0.34, 1),
+			opacity 120ms ease;
+		will-change: transform, opacity;
+	}
+
+	.sidebar-stage--closed {
+		width: 0;
+	}
+
+	.sidebar-stage--closed :global(.sidebar) {
+		transform: translateX(-16px);
+		opacity: 0;
+		pointer-events: none;
+	}
+
+	.sidebar-stage--open :global(.sidebar) {
+		transform: translateX(0);
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	.workspace-shell::before {
+		content: '';
+		position: absolute;
+		inset: 0;
+		pointer-events: none;
+		background: linear-gradient(180deg, rgb(255 255 255 / 4%), transparent 30%);
+	}
+
+	@media (max-width: 900px) {
+		.app-shell {
+			padding: 0.35rem;
+			gap: 0.35rem;
+		}
+
+		.workspace-shell {
+			border-radius: calc(var(--radius-xl) + 4px);
+		}
+
+		.sidebar-stage {
+			width: min(17.5rem, 86vw);
+		}
+	}
+
+	@keyframes spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+</style>

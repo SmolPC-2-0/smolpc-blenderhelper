@@ -1,16 +1,23 @@
 // Disable console window on Windows release builds
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod python_checker;
-mod server_manager;
+mod commands;
+mod inference;
 mod logger;
+mod models;
+mod ollama;
+mod prompts;
+mod rag;
+mod scene_bridge;
+mod state;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
+use state::GenerationBackend;
 use tauri::Manager;
 
-struct AppState {
-    server: Mutex<server_manager::ServerManager>,
+struct BridgeRuntimeState {
+    bridge: Mutex<Option<scene_bridge::SceneBridgeHandle>>,
 }
 
 #[tauri::command]
@@ -24,10 +31,13 @@ fn open_logs(app_handle: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn main() {
-    // Initialize Tauri app first to get paths
+    let _ = env_logger::Builder::from_default_env().try_init();
+    let generation_state = commands::generation::GenerationState::default();
+    let setup_generation_state = generation_state.clone();
+
     let result = tauri::Builder::default()
-        .setup(|app| {
-            // Get app data directory
+        .manage(generation_state.clone())
+        .setup(move |app| {
             let app_data_dir = app
                 .path()
                 .app_data_dir()
@@ -35,125 +45,108 @@ fn main() {
 
             println!("App data directory: {:?}", app_data_dir);
 
-            // Setup log file
-            let log_file = logger::setup_log_file(&app_data_dir)
-                .expect("Failed to setup log file");
-
+            let log_file = logger::setup_log_file(&app_data_dir).expect("Failed to setup log file");
             println!("Server logs will be written to: {:?}", log_file);
+            let _ = logger::append_log_line(&log_file, "Blender Helper backend starting");
 
-            // Check if Python is available
-            let python_path = match python_checker::check_python_available() {
-                Ok(path) => {
-                    println!("Found Python: {}", path);
-                    path
-                }
-                Err(e) => {
-                    eprintln!("{}", e);
-                    show_error_dialog(
-                        "Python Not Found",
-                        &format!("{}\n\nWould you like to download Python?", e),
-                        true,
-                    );
-                    std::process::exit(1);
-                }
-            };
-
-            // Get the RAG system directory
-            // In development, it's at the project root
-            // In production, it's bundled in resources
             let rag_dir = get_rag_directory(app);
+            println!("RAG data directory: {:?}", rag_dir);
 
-            println!("RAG system directory: {:?}", rag_dir);
+            let rag_index = rag::index::RagIndex::load_from_dir(&rag_dir);
+            if rag_index.is_loaded() {
+                println!(
+                    "[RAG] OK: Loaded {} documentation chunks",
+                    rag_index.document_count()
+                );
+            } else {
+                println!(
+                    "[RAG] Warning: Retrieval disabled ({})",
+                    rag_index.load_error().unwrap_or("unknown error")
+                );
+            }
 
-            // Check if dependencies are cached
-            let deps_cached = python_checker::are_dependencies_cached(&app_data_dir);
+            let backend_state = state::BackendState::new(rag_index);
 
-            if !deps_cached {
-                println!("Dependencies not cached, checking installation...");
+            let models_dir = get_models_directory(app);
+            println!("ONNX models directory: {:?}", models_dir);
+            backend_state.onnx_runtime.discover_from_dir(&models_dir);
 
-                // Verify dependencies
-                match python_checker::verify_dependencies(&python_path) {
-                    Ok(_) => {
-                        println!("All dependencies found!");
-                        // Mark as installed
-                        python_checker::mark_dependencies_installed(&app_data_dir)
-                            .expect("Failed to mark dependencies as installed");
-                    }
-                    Err(missing) => {
-                        println!("Missing dependencies: {:?}", missing);
-                        println!("Installing dependencies...");
-
-                        let requirements_path = rag_dir.join("requirements_server.txt");
-
-                        match python_checker::install_dependencies(&python_path, &requirements_path)
-                        {
-                            Ok(output) => {
-                                println!("Dependencies installed successfully!");
-                                println!("{}", output);
-
-                                // Mark as installed
-                                python_checker::mark_dependencies_installed(&app_data_dir)
-                                    .expect("Failed to mark dependencies as installed");
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to install dependencies: {}", e);
-                                show_error_dialog(
-                                    "Dependency Installation Failed",
-                                    &format!("Failed to install Python dependencies:\n\n{}", e),
-                                    false,
-                                );
-                                std::process::exit(1);
-                            }
+            if backend_state.get_generation_backend() == GenerationBackend::Onnx {
+                match backend_state.onnx_runtime.load_default_model() {
+                    Ok(model) => {
+                        if backend_state.onnx_runtime.is_ready() {
+                            println!(
+                                "[ONNX] OK: Loaded model '{}' ({})",
+                                model.id, model.model_path
+                            );
+                        } else {
+                            println!(
+                                "[ONNX] Warning: Model '{}' loaded without executable ONNX session",
+                                model.id
+                            );
+                            println!("[ONNX] Warning: Falling back to Ollama backend");
+                            backend_state.set_generation_backend(GenerationBackend::Ollama);
                         }
                     }
-                }
-            } else {
-                println!("Dependencies already installed (cached)");
-            }
-
-            // Start the server
-            let mut server = server_manager::ServerManager::new(log_file);
-
-            match server.start(&python_path, &rag_dir) {
-                Ok(_) => {
-                    println!("RAG server started successfully on port {}", server.port());
-                }
-                Err(e) => {
-                    eprintln!("Failed to start server: {}", e);
-                    show_error_dialog(
-                        "Server Startup Failed",
-                        &format!("Failed to start RAG server:\n\n{}", e),
-                        false,
-                    );
-                    std::process::exit(1);
+                    Err(err) => {
+                        println!("[ONNX] Warning: Failed to load default model - {}", err);
+                        println!("[ONNX] Warning: Falling back to Ollama backend");
+                        backend_state.set_generation_backend(GenerationBackend::Ollama);
+                    }
                 }
             }
 
-            // Store server in app state
-            app.manage(AppState {
-                server: Mutex::new(server),
+            app.manage(backend_state.clone());
+
+            let bridge = tauri::async_runtime::block_on(scene_bridge::start_scene_bridge(
+                backend_state.clone(),
+                setup_generation_state.clone(),
+            ))
+            .map_err(|e| format!("Failed to start scene bridge: {}", e))?;
+
+            app.manage(BridgeRuntimeState {
+                bridge: Mutex::new(Some(bridge)),
             });
 
+            println!("[SceneBridge] OK: Listening on http://127.0.0.1:5179");
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![open_logs])
+        .invoke_handler(tauri::generate_handler![
+            open_logs,
+            commands::inference::list_models,
+            commands::inference::load_model,
+            commands::inference::unload_model,
+            commands::inference::set_generation_backend,
+            commands::inference::get_generation_backend,
+            commands::inference::inference_generate,
+            commands::inference::inference_cancel,
+            commands::generation::assistant_stream_ask,
+            commands::generation::is_generating,
+            commands::assistant::assistant_ask,
+            commands::assistant::assistant_analyze_scene,
+            commands::assistant::retrieve_rag_context,
+            commands::assistant::assistant_status,
+            commands::scene::scene_current,
+            commands::scene::scene_update,
+        ])
         .build(tauri::generate_context!());
 
     match result {
         Ok(app) => {
             app.run(|app_handle, event| {
                 if let tauri::RunEvent::ExitRequested { .. } = event {
-                    // Stop server when app exits
-                    if let Some(state) = app_handle.try_state::<AppState>() {
-                        if let Ok(mut server) = state.server.lock() {
-                            server.stop();
+                    if let Some(state) = app_handle.try_state::<BridgeRuntimeState>() {
+                        if let Ok(mut bridge_guard) = state.bridge.lock() {
+                            if let Some(bridge) = bridge_guard.as_mut() {
+                                bridge.stop();
+                            }
                         }
                     }
                 }
             });
         }
         Err(e) => {
-            eprintln!("Failed to build Tauri app: {}", e);
+            eprintln!("[Tauri] Error: Failed to build Tauri app - {}", e);
             std::process::exit(1);
         }
     }
@@ -163,82 +156,106 @@ fn main() {
 /// In development: uses project root rag_system/
 /// In production: uses bundled resources
 fn get_rag_directory(app: &tauri::App) -> PathBuf {
-    // Try to get bundled resources first (production)
+    // Check bundled resource paths (tauri.conf.json specifies "resources/rag_system/...")
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        // Tauri 2 bundles "resources/rag_system/..." relative to the resource dir
+        let bundled = resource_dir.join("resources").join("rag_system");
+        if bundled.join("simple_db").join("metadata.json").exists() {
+            return bundled;
+        }
+    }
+
     if let Ok(resource_path) = app
         .path()
-        .resolve("rag_system", tauri::path::BaseDirectory::Resource)
+        .resolve("resources/rag_system", tauri::path::BaseDirectory::Resource)
     {
-        println!("Checking resource path: {:?}", resource_path);
         if resource_path.exists() {
-            println!("Found rag_system at resource path!");
             return resource_path;
         }
     }
 
-    // For release builds, check next to the executable
+    if let Ok(resource_path) = app
+        .path()
+        .resolve("rag_system", tauri::path::BaseDirectory::Resource)
+    {
+        if resource_path.exists() {
+            return resource_path;
+        }
+    }
+
     if let Ok(exe_dir) = std::env::current_exe() {
         if let Some(parent) = exe_dir.parent() {
+            // Check resources/ subfolder next to executable
+            let exe_resources_rag = parent.join("resources").join("rag_system");
+            if exe_resources_rag.exists() {
+                return exe_resources_rag;
+            }
+
             let exe_rag = parent.join("rag_system");
-            println!("Checking next to exe: {:?}", exe_rag);
             if exe_rag.exists() {
-                println!("Found rag_system next to executable!");
                 return exe_rag;
             }
 
-            // Also check _up_ directory (Tauri bundling quirk)
             let up_rag = parent.join("_up_").join("rag_system");
-            println!("Checking _up_ directory: {:?}", up_rag);
             if up_rag.exists() {
-                println!("Found rag_system in _up_ directory!");
                 return up_rag;
             }
         }
     }
 
-    // Fall back to development path
-    let mut dev_path = std::env::current_dir().expect("Failed to get current directory");
-    dev_path.push("rag_system");
-    println!("Checking dev path: {:?}", dev_path);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
+    let dev_path = cwd.join("rag_system");
     if dev_path.exists() {
-        println!("Found rag_system at dev path!");
         return dev_path;
     }
 
-    // Last resort: check parent directory (in case we're in src-tauri/)
-    let mut parent_path = std::env::current_dir().expect("Failed to get current directory");
-    parent_path.pop();
-    parent_path.push("rag_system");
-    println!("Checking parent path: {:?}", parent_path);
-
-    if parent_path.exists() {
-        println!("Found rag_system at parent path!");
-        return parent_path;
+    let parent_path = cwd.parent().map(|p| p.join("rag_system"));
+    if let Some(ref parent_path) = parent_path {
+        if parent_path.exists() {
+            return parent_path.clone();
+        }
     }
 
-    eprintln!("\n=== ERROR ===");
-    eprintln!("Could not find rag_system directory!");
-    eprintln!("Tried the following locations:");
-    eprintln!("- Tauri resource path");
-    eprintln!("- Next to executable");
-    eprintln!("- _up_/ directory");
-    eprintln!("- Current directory: {:?}", std::env::current_dir());
-    eprintln!("- Parent directory");
-    eprintln!("=============\n");
-
-    panic!("Could not find rag_system directory!");
+    dev_path
 }
 
-/// Shows an error dialog to the user
-fn show_error_dialog(title: &str, message: &str, has_download_option: bool) {
-    // For now, just print to stderr. In Tauri 2, dialogs need an AppHandle
-    // which we don't have before the app is built
-    eprintln!("\n=== {} ===", title);
-    eprintln!("{}", message);
-    eprintln!("================\n");
-
-    if has_download_option {
-        eprintln!("Opening Python download page...");
-        let _ = open::that("https://www.python.org/downloads/");
+fn get_models_directory(app: &tauri::App) -> PathBuf {
+    if let Ok(resource_path) = app
+        .path()
+        .resolve("models", tauri::path::BaseDirectory::Resource)
+    {
+        if resource_path.exists() {
+            return resource_path;
+        }
     }
+
+    if let Ok(exe_dir) = std::env::current_exe() {
+        if let Some(parent) = exe_dir.parent() {
+            let exe_models = parent.join("models");
+            if exe_models.exists() {
+                return exe_models;
+            }
+
+            let up_models = parent.join("_up_").join("models");
+            if up_models.exists() {
+                return up_models;
+            }
+        }
+    }
+
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let direct = cwd.join("models");
+    if direct.exists() {
+        return direct;
+    }
+
+    let parent = cwd.parent().map(|p| p.join("models"));
+    if let Some(parent) = parent {
+        if parent.exists() {
+            return parent;
+        }
+    }
+
+    direct
 }

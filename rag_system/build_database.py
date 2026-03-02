@@ -15,13 +15,13 @@ import numpy as np
 try:
     from sentence_transformers import SentenceTransformer
 except ImportError:
-    print("❌ ERROR: sentence-transformers not installed!")
+    print("[ERROR] sentence-transformers not installed")
     print("Install with: pip install -r requirements_server.txt")
     exit(1)
 import time
 
 # Configuration
-BLENDER_VERSION = "4.2"
+BLENDER_VERSION = os.getenv("BLENDER_VERSION", "4.2")
 DOCS_BASE_URL = f"https://docs.blender.org/api/{BLENDER_VERSION}"
 DB_PATH = Path(__file__).parent / "simple_db"
 CACHE_PATH = Path(__file__).parent / "docs_cache"
@@ -60,11 +60,11 @@ class BlenderDocsIndexer:
         cache_file = self.cache_path / url_path.replace("/", "_")
 
         if cache_file.exists():
-            print(f"  📄 Cached: {url_path}")
+            print(f"  [CACHE] {url_path}")
             return cache_file.read_text(encoding='utf-8')
 
         full_url = DOCS_BASE_URL + url_path
-        print(f"  🌐 Fetching: {full_url}")
+        print(f"  [FETCH] {full_url}")
 
         try:
             response = requests.get(full_url, timeout=10)
@@ -74,7 +74,7 @@ class BlenderDocsIndexer:
             time.sleep(1)  # Be nice to server
             return html
         except Exception as e:
-            print(f"  ❌ ERROR: {e}")
+            print(f"  [ERROR] {e}")
             return None
 
     def parse_page(self, html, url_path):
@@ -123,22 +123,22 @@ class BlenderDocsIndexer:
         all_chunks = []
 
         for page_url in API_PAGES:
-            print(f"\n📖 Processing: {page_url}")
+            print(f"\n[PROCESS] {page_url}")
             html = self.fetch_page(page_url)
             if not html:
                 continue
 
             chunks = self.parse_page(html, page_url)
-            print(f"  ✅ Extracted {len(chunks)} chunks")
+            print(f"  [OK] Extracted {len(chunks)} chunks")
             all_chunks.extend(chunks)
 
         if not all_chunks:
-            print("\n❌ No content extracted! Check internet connection.")
+            print("\n[ERROR] No content extracted. Check internet connection.")
             return
 
         print(f"\n{'='*60}")
-        print(f"📊 Total chunks: {len(all_chunks)}")
-        print("🔄 Creating embeddings...")
+        print(f"[INFO] Total chunks: {len(all_chunks)}")
+        print("[INFO] Creating embeddings...")
         print(f"{'='*60}\n")
 
         # Create embeddings
@@ -149,19 +149,25 @@ class BlenderDocsIndexer:
         # Save as NumPy array
         embeddings_file = self.db_path / "embeddings.npy"
         np.save(embeddings_file, embeddings)
-        print(f"\n✅ Embeddings saved: {embeddings_file}")
+        print(f"\n[OK] Embeddings saved: {embeddings_file}")
 
         # Save metadata
         metadata_file = self.db_path / "metadata.pkl"
         with open(metadata_file, 'wb') as f:
             pickle.dump(all_chunks, f)
-        print(f"✅ Metadata saved: {metadata_file}")
+        print(f"[OK] Metadata saved: {metadata_file}")
+
+        # Save JSON metadata for Rust Tier 2 loader
+        metadata_json_file = self.db_path / "metadata.json"
+        with open(metadata_json_file, 'w', encoding='utf-8') as f:
+            json.dump(all_chunks, f, ensure_ascii=False)
+        print(f"[OK] Metadata JSON saved: {metadata_json_file}")
 
         print(f"\n{'='*60}")
-        print(f"✅ SUCCESS! Built knowledge base with {len(all_chunks)} documents")
+        print(f"[OK] Built knowledge base with {len(all_chunks)} documents")
         print(f"{'='*60}")
-        print(f"\n📁 Database location: {self.db_path}")
-        print("\n🚀 Next steps:")
+        print(f"\n[INFO] Database location: {self.db_path}")
+        print("\n[INFO] Next steps:")
         print("  1. Start server: python server.py")
         print("  2. Open Blender and use the addon")
         print()
