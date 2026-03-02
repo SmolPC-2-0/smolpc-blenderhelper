@@ -8,6 +8,22 @@ use tauri::State;
 const MAX_QUESTION_LEN: usize = 10_000;
 const MAX_GOAL_LEN: usize = 500;
 const DEFAULT_N_RESULTS: usize = 3;
+const SCENE_QUERY_HINTS: [&str; 14] = [
+    "current scene",
+    "scene right now",
+    "in my scene",
+    "on my scene",
+    "what is in the scene",
+    "what's in the scene",
+    "whats in the scene",
+    "scene contents",
+    "list objects",
+    "what objects",
+    "which objects",
+    "active object",
+    "selected object",
+    "scene summary",
+];
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AskRequest {
@@ -91,6 +107,35 @@ pub fn retrieve_contexts(
     })
 }
 
+fn rag_is_loaded(state: &BackendState) -> bool {
+    match state.rag_index.lock() {
+        Ok(index) => index.is_loaded(),
+        Err(poisoned) => poisoned.into_inner().is_loaded(),
+    }
+}
+
+fn should_skip_rag_for_scene_query(question: &str) -> bool {
+    let normalized = question.trim().to_ascii_lowercase();
+    SCENE_QUERY_HINTS
+        .iter()
+        .any(|needle| normalized.contains(needle))
+}
+
+pub fn retrieve_contexts_for_question(
+    state: &BackendState,
+    question: &str,
+    n_results: usize,
+) -> Result<RagRetrieveResponse, String> {
+    if should_skip_rag_for_scene_query(question) {
+        return Ok(RagRetrieveResponse {
+            contexts: Vec::new(),
+            rag_enabled: rag_is_loaded(state),
+        });
+    }
+
+    retrieve_contexts(state, question, n_results)
+}
+
 pub async fn ask_internal(state: &BackendState, request: AskRequest) -> Result<AskResponse, String> {
     let question = request.question.trim();
     if question.is_empty() {
@@ -101,7 +146,7 @@ pub async fn ask_internal(state: &BackendState, request: AskRequest) -> Result<A
     }
 
     let scene_context = resolve_scene_context(state, request.scene_context);
-    let rag = retrieve_contexts(state, question, DEFAULT_N_RESULTS)?;
+    let rag = retrieve_contexts_for_question(state, question, DEFAULT_N_RESULTS)?;
     let (system_prompt, user_prompt) =
         build_question_prompts(question, scene_context.as_ref(), &rag.contexts);
 

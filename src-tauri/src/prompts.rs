@@ -1,6 +1,8 @@
 use crate::rag::types::RagContext;
 use crate::state::SceneData;
 
+const MAX_SCENE_OBJECTS_IN_SUMMARY: usize = 40;
+
 pub fn build_question_prompts(
     question: &str,
     scene_context: Option<&SceneData>,
@@ -13,6 +15,12 @@ pub fn build_question_prompts(
         "You are a patient Blender instructor helping students learn 3D modeling through the Blender interface.
 
 CRITICAL INSTRUCTION: You MUST teach using UI-based instructions only. NEVER provide Python code or bpy commands.
+
+Scene-awareness rules:
+- Treat the provided \"Current Scene Information\" as a live, authoritative snapshot.
+- If the user asks what is currently in their scene, answer directly from that snapshot first.
+- Do NOT tell the user to check the Outliner/Properties to answer scene-state questions when live scene data is provided.
+- Only say scene data is unavailable when the snapshot explicitly says no live scene data is available.
 
 Your teaching style:
 - Provide step-by-step UI instructions (menu clicks, keyboard shortcuts, tool selections)
@@ -29,7 +37,9 @@ Your teaching style:
 The documentation below contains Python code for reference ONLY - you must translate these concepts into UI actions:
 {}
 
-Answer the student's question in a friendly, educational manner with UI-based instructions. Keep answers concise (2-4 paragraphs).
+Answer the student's question in a friendly, educational manner with UI-based instructions.
+If they ask for scene status, start with a compact bullet summary of the live scene data before any teaching guidance.
+Keep answers concise.
 
 EXAMPLES OF GOOD RESPONSES:
 - \"To add a sphere, press Shift+A in the 3D Viewport, then navigate to Mesh > UV Sphere\"
@@ -83,18 +93,55 @@ Based on their current scene, what should they try next to continue learning? Pr
 
 fn format_scene_summary(scene_context: Option<&SceneData>) -> String {
     match scene_context {
-        Some(scene) => format!(
-            "Current Scene Information:
+        Some(scene) => {
+            let listed_count = scene.objects.len().min(MAX_SCENE_OBJECTS_IN_SUMMARY);
+            let object_lines = if listed_count == 0 {
+                "  (empty scene)".to_string()
+            } else {
+                scene
+                    .objects
+                    .iter()
+                    .take(MAX_SCENE_OBJECTS_IN_SUMMARY)
+                    .map(|obj| {
+                        let modifiers = if obj.modifiers.is_empty() {
+                            "none".to_string()
+                        } else {
+                            obj.modifiers
+                                .iter()
+                                .map(|m| format!("{} ({})", m.name, m.modifier_type))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        };
+                        format!("  - {} | {} | modifiers: {}", obj.name, obj.object_type, modifiers)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            let omitted = scene.objects.len().saturating_sub(listed_count);
+            let omitted_line = if omitted > 0 {
+                format!("\n- Additional objects not listed: {}", omitted)
+            } else {
+                String::new()
+            };
+
+            format!(
+                "Current Scene Information (live snapshot):
 - Objects: {} total
-- Active: {}
+- Active object: {}
 - Mode: {}",
-            scene.object_count,
-            scene
-                .active_object
-                .as_deref()
-                .unwrap_or("None"),
-            scene.mode
-        ),
+                scene.object_count,
+                scene.active_object.as_deref().unwrap_or("None"),
+                scene.mode
+            ) + &format!(
+                "
+- Render engine: {}
+- Listed objects (name | type | modifiers):
+{}{}",
+                scene.render_engine.as_deref().unwrap_or("Unknown"),
+                object_lines,
+                omitted_line
+            )
+        }
         None => "Current Scene Information:\n- No live Blender scene data available".to_string(),
     }
 }

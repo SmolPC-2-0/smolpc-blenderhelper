@@ -85,7 +85,7 @@ pub async fn assistant_stream_ask(
     }
 
     let effective_scene_context = super::assistant::resolve_scene_context(&backend_state, scene_context);
-    let rag = super::assistant::retrieve_contexts(&backend_state, question, 3)?;
+    let rag = super::assistant::retrieve_contexts_for_question(&backend_state, question, 3)?;
     let (system_prompt, user_prompt) =
         build_question_prompts(question, effective_scene_context.as_ref(), &rag.contexts);
 
